@@ -1,3 +1,84 @@
+<?php
+// ============================================
+// register.php — top section
+// This runs BEFORE any HTML is sent to the browser.
+// ============================================
+
+require 'config/db.php'; // gives us $pdo, our database connection
+
+$errors = [];      // empty array to collect any problems we find
+$success = false;  // starts false; becomes true only if registration works
+
+// Check: did the user just submit the form, or are they just viewing the page?
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    // Grab what they typed. trim() removes accidental extra spaces.
+    $fullName = trim($_POST['fullName']);
+    $email = trim($_POST['email']);
+    $password = $_POST['password'];
+    $confirmPassword = $_POST['confirmPassword'];
+
+    // ---- Server-side validation ----
+    // NOTE: we already validate with JavaScript on the frontend, but
+    // JS can be disabled or bypassed. PHP validation is the real,
+    // trustworthy check — never rely on JS alone for security.
+
+    if (empty($fullName)) {
+        $errors[] = "Full name is required.";
+    }
+
+    if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errors[] = "A valid email address is required.";
+    }
+
+    if (strlen($password) < 8) {
+        $errors[] = "Password must be at least 8 characters.";
+    }
+
+    if ($password !== $confirmPassword) {
+        $errors[] = "Passwords do not match.";
+    }
+
+    // Check if this email is already registered
+    // "SELECT id FROM users WHERE email = ?" means:
+    // "find a user row where the email column matches whatever we provide"
+    // The ? is a placeholder — PDO fills it in safely.
+    if (empty($errors)) {
+        $checkStmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
+        $checkStmt->execute([$email]);
+
+        if ($checkStmt->rowCount() > 0) {
+            // rowCount() tells us how many matching rows were found.
+            // If it's more than 0, that email is already taken.
+            $errors[] = "An account with this email already exists.";
+        }
+    }
+
+    // If we made it here with zero errors, it's safe to create the account
+    if (empty($errors)) {
+
+        // Scramble the password before storing it — never store plain text
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+        // Insert the new user into the database.
+        // Again, ? placeholders keep this safe from SQL injection.
+        $insertStmt = $pdo->prepare(
+            "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'customer')"
+        );
+        $insertStmt->execute([$fullName, $email, $hashedPassword]);
+
+        $success = true;
+
+        // Redirect them to the login page after successful registration.
+        // header() sends an instruction to the browser: "go to this URL instead."
+        // IMPORTANT: header() must run BEFORE any HTML output, which is
+        // why all this PHP code sits at the very top of the file.
+        header("Location: login.php?registered=1");
+        exit; // stop the script here — nothing below this should run
+    }
+}
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -22,13 +103,21 @@
 
     <div class="text-center mb-8">
         <h1 class="text-2xl font-bold text-gray-900 mb-2">Create Your Account</h1>
+        <?php if (!empty($errors)): ?>
+    <div class="bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg px-4 py-3 mb-4">
+        <ul class="list-disc list-inside space-y-1">
+            <?php foreach ($errors as $error): ?>
+                <li><?= htmlspecialchars($error) ?></li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+<?php endif; ?>
         <p class="text-sm text-gray-500">Faster checkout, order tracking, and more.</p>
     </div>
 
     <div class="bg-white rounded-2xl border border-gray-200 p-6 sm:p-8">
 
-        <form id="registerForm" class="space-y-4" novalidate>
-
+<form id="registerForm" class="space-y-4" method="POST" novalidate>
             <div>
                 <label class="text-xs font-semibold text-gray-600 mb-1 block">Full Name</label>
                 <div class="relative">
@@ -155,63 +244,55 @@
     const termsCheckbox = document.getElementById('termsCheckbox');
     const termsError = document.getElementById('termsError');
 
-    form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        formError.classList.add('hidden');
-        let valid = true;
+   form.addEventListener('submit', (e) => {
+    let valid = true;
 
-        form.querySelectorAll('input[required]:not([type=checkbox])').forEach(input => {
-            const errorMsg = input.closest('div').parentElement.querySelector('.error-msg')
-                || input.parentElement.parentElement.querySelector('.error-msg');
-            let fieldValid = input.value.trim() !== '';
+    form.querySelectorAll('input[required]:not([type=checkbox])').forEach(input => {
+        const errorMsg = input.closest('div').parentElement.querySelector('.error-msg')
+            || input.parentElement.parentElement.querySelector('.error-msg');
+        let fieldValid = input.value.trim() !== '';
 
-            if (input.name === 'email' && fieldValid) {
-                fieldValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.value);
-            }
-            if (input.name === 'password' && fieldValid) {
-                fieldValid = input.value.length >= 8;
-            }
-            if (input.name === 'confirmPassword' && fieldValid) {
-                fieldValid = input.value === passwordInput.value;
-            }
-
-            if (!fieldValid) {
-                input.classList.add('border-red-500');
-                if (errorMsg) errorMsg.classList.remove('hidden');
-                valid = false;
-            } else {
-                input.classList.remove('border-red-500');
-                if (errorMsg) errorMsg.classList.add('hidden');
-            }
-        });
-
-        if (!termsCheckbox.checked) {
-            termsError.classList.remove('hidden');
-            valid = false;
-        } else {
-            termsError.classList.add('hidden');
+        if (input.name === 'email' && fieldValid) {
+            fieldValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.value);
+        }
+        if (input.name === 'password' && fieldValid) {
+            fieldValid = input.value.length >= 8;
+        }
+        if (input.name === 'confirmPassword' && fieldValid) {
+            fieldValid = input.value === passwordInput.value;
         }
 
-        if (!valid) return;
-
-        // NOTE: real account creation (hashing the password with
-        // password_hash and inserting into the `users` table) happens
-        // in the PHP phase. This demo simulates a duplicate-email check.
-        registerBtn.disabled = true;
-        registerBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Creating account...';
-        lucide.createIcons();
-
-        setTimeout(() => {
-            const email = form.email.value;
-            if (email === 'taken@example.com') {
-                formError.classList.remove('hidden');
-                registerBtn.disabled = false;
-                registerBtn.textContent = 'Create Account';
-            } else {
-                window.location.href = 'account.php';
-            }
-        }, 1200);
+        if (!fieldValid) {
+            input.classList.add('border-red-500');
+            if (errorMsg) errorMsg.classList.remove('hidden');
+            valid = false;
+        } else {
+            input.classList.remove('border-red-500');
+            if (errorMsg) errorMsg.classList.add('hidden');
+        }
     });
+
+    if (!termsCheckbox.checked) {
+        termsError.classList.remove('hidden');
+        valid = false;
+    } else {
+        termsError.classList.add('hidden');
+    }
+
+    if (!valid) {
+        // Only block submission if something's actually wrong.
+        e.preventDefault();
+        return;
+    }
+
+    // Validation passed — let the form submit normally to register.php,
+    // where our real PHP code takes over (checks database, hashes
+    // password, inserts the user). No e.preventDefault() here, and no
+    // fake setTimeout — this is the real, live submission now.
+    registerBtn.disabled = true;
+    registerBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Creating account...';
+    lucide.createIcons();
+});
 </script>
 
 </body>
