@@ -1,4 +1,65 @@
-<!DOCTYPE html>
+ <?php
+// ============================================
+// login.php — top section
+// ============================================
+
+session_start(); // MUST be the very first thing — before any HTML output
+require 'config/db.php';
+
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $email = trim($_POST['email']);
+    $password = $_POST['password'];
+
+    if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errors[] = "Enter a valid email address.";
+    }
+
+    if (empty($password)) {
+        $errors[] = "Password is required.";
+    }
+
+    if (empty($errors)) {
+
+        // Look up this user by email
+        $stmt = $pdo->prepare("SELECT id, name, email, password_hash, role FROM users WHERE email = ?");
+        $stmt->execute([$email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        // fetch() grabs one matching row as an associative array,
+        // e.g. $user['name'], $user['role'], etc. If no match, $user is false.
+
+        // Check: does a user exist AND does the password match?
+        if ($user && password_verify($password, $user['password_hash'])) {
+
+            // Correct login! Store key info in the session so every
+            // other page can check "is someone logged in, and who?"
+            $_SESSION['user_id'] = $user['id'];
+            $_SESSION['user_name'] = $user['name'];
+            $_SESSION['user_role'] = $user['role'];
+
+            // Role-based redirect — this is the Option 1 decision we made earlier
+            if ($user['role'] === 'admin') {
+                header("Location: admin/dashboard.php");
+            } else {
+                header("Location: account.php");
+            }
+            exit;
+
+        } else {
+            // Generic message on purpose — we don't say WHICH part was
+            // wrong (email vs password). This is a real security practice:
+            // telling someone "email not found" vs "wrong password"
+            // helps attackers guess which emails are registered.
+            $errors[] = "Incorrect email or password. Please try again.";
+        }
+    }
+}
+?>
+ 
+ 
+ <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -22,12 +83,23 @@
 
     <div class="text-center mb-8">
         <h1 class="text-2xl font-bold text-gray-900 mb-2">Welcome Back</h1>
+
+        <?php if (!empty($errors)): ?>
+    <div class="bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg px-4 py-3 mt-4">
+        <ul class="list-disc list-inside space-y-1">
+            <?php foreach ($errors as $error): ?>
+                <li><?= htmlspecialchars($error) ?></li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+<?php endif; ?>
+
         <p class="text-sm text-gray-500">Log in to track orders and check out faster.</p>
     </div>
 
     <div class="bg-white rounded-2xl border border-gray-200 p-6 sm:p-8">
 
-        <form id="loginForm" class="space-y-4">
+        <form id="loginForm" class="space-y-4" method="POST">
 
             <div>
                 <label class="text-xs font-semibold text-gray-600 mb-1 block">Email Address</label>
@@ -110,51 +182,37 @@
     const loginBtn = document.getElementById('loginBtn');
 
     form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        formError.classList.add('hidden');
-        let valid = true;
+    let valid = true;
 
-        form.querySelectorAll('input[required]').forEach(input => {
-            const errorMsg = input.parentElement.parentElement.querySelector('.error-msg');
-            let fieldValid = input.value.trim() !== '';
+    form.querySelectorAll('input[required]').forEach(input => {
+        const errorMsg = input.parentElement.parentElement.querySelector('.error-msg');
+        let fieldValid = input.value.trim() !== '';
 
-            if (input.type === 'email' && fieldValid) {
-                fieldValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.value);
-            }
+        if (input.type === 'email' && fieldValid) {
+            fieldValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.value);
+        }
 
-            if (!fieldValid) {
-                input.classList.add('border-red-500');
-                if (errorMsg) errorMsg.classList.remove('hidden');
-                valid = false;
-            } else {
-                input.classList.remove('border-red-500');
-                if (errorMsg) errorMsg.classList.add('hidden');
-            }
-        });
-
-        if (!valid) return;
-
-        // NOTE: this is where real authentication takes over in the PHP
-        // phase — checking the email/password against the `users` table
-        // (with password_verify) and starting a PHP session. For now we
-        // simulate a loading state and just demonstrate the error state
-        // exists and works, using a fake check.
-        loginBtn.disabled = true;
-        loginBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Logging in...';
-        lucide.createIcons();
-
-        setTimeout(() => {
-            const email = form.email.value;
-            // Demo rule: any email except test@fail.com "succeeds"
-            if (email === 'test@fail.com') {
-                formError.classList.remove('hidden');
-                loginBtn.disabled = false;
-                loginBtn.textContent = 'Log In';
-            } else {
-                window.location.href = 'account.php';
-            }
-        }, 1200);
+        if (!fieldValid) {
+            input.classList.add('border-red-500');
+            if (errorMsg) errorMsg.classList.remove('hidden');
+            valid = false;
+        } else {
+            input.classList.remove('border-red-500');
+            if (errorMsg) errorMsg.classList.add('hidden');
+        }
     });
+
+    if (!valid) {
+        e.preventDefault();
+        return;
+    }
+
+    // Validation passed — let the real form submission to login.php
+    // happen, where PHP checks the database and starts the session.
+    loginBtn.disabled = true;
+    loginBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Logging in...';
+    lucide.createIcons();
+});
 </script>
 
 </body>
