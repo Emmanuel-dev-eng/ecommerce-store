@@ -1,4 +1,4 @@
-<?php?>
+<?php require '../config/admin_auth_check.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>

@@ -1,4 +1,4 @@
-<?php?>
+<?php require 'config/auth_check.php'; ?>
 
 <!DOCTYPE html>
 <html lang="en">
