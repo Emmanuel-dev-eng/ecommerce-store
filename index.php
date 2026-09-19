@@ -1,3 +1,31 @@
+<?php
+// ============================================
+// index.php — top section
+// Fetches a few featured products for the homepage
+// ============================================
+
+require 'config/db.php';
+
+$sql = "
+    SELECT 
+        products.id,
+        products.name,
+        products.base_price,
+        product_images.image_url
+    FROM products
+    LEFT JOIN product_images 
+        ON products.id = product_images.product_id 
+        AND product_images.is_primary = 1
+    WHERE products.is_active = 1
+    ORDER BY products.created_at DESC
+    LIMIT 4
+";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute();
+$featuredProducts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -149,57 +177,23 @@
 
         <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
 
-            <!-- Product Card 1 -->
-            <a href="product.php?id=1" class="group">
-                <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                    <img src="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=400&q=80" alt="Classic White Sneakers"
-                         class="w-full h-full object-cover group-hover:scale-105 transition">
-                    <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                        <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                    </button>
-                </div>
-                <h3 class="text-sm font-medium text-gray-900 truncate">Classic White Sneakers</h3>
-                <p class="text-sm font-bold text-gray-900 mt-1">$59.99</p>
-            </a>
+          
 
-            <!-- Product Card 2 -->
-            <a href="product.php?id=2" class="group">
-                <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                    <img src="https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=400&q=80" alt="Oversized Denim Jacket"
-                         class="w-full h-full object-cover group-hover:scale-105 transition">
-                    <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                        <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                    </button>
-                </div>
-                <h3 class="text-sm font-medium text-gray-900 truncate">Oversized Denim Jacket</h3>
-                <p class="text-sm font-bold text-gray-900 mt-1">$89.99</p>
-            </a>
+<?php foreach ($featuredProducts as $product): ?>
+    <a href="product.php?id=<?= $product['id'] ?>" class="group">
+        <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
+            <img src="<?= htmlspecialchars($product['image_url']) ?>" alt="<?= htmlspecialchars($product['name']) ?>"
+                 class="w-full h-full object-cover group-hover:scale-105 transition">
+            <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
+                <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
+            </button>
+        </div>
+        <h3 class="text-sm font-medium text-gray-900 truncate"><?= htmlspecialchars($product['name']) ?></h3>
+        <p class="text-sm font-bold text-gray-900 mt-1">$<?= number_format($product['base_price'], 2) ?></p>
+    </a>
+<?php endforeach; ?>
 
-            <!-- Product Card 3 -->
-            <a href="product.php?id=3" class="group">
-                <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                    <img src="https://images.unsplash.com/photo-1523381210434-271e8be1f52b?w=400&q=80" alt="Leather Crossbody Bag"
-                         class="w-full h-full object-cover group-hover:scale-105 transition">
-                    <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                        <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                    </button>
-                </div>
-                <h3 class="text-sm font-medium text-gray-900 truncate">Leather Crossbody Bag</h3>
-                <p class="text-sm font-bold text-gray-900 mt-1">$74.99</p>
-            </a>
 
-            <!-- Product Card 4 -->
-            <a href="product.php?id=4" class="group">
-                <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                    <img src="https://images.unsplash.com/photo-1434389677669-e08b4cac3105?w=400&q=80" alt="Minimalist Wrist Watch"
-                         class="w-full h-full object-cover group-hover:scale-105 transition">
-                    <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                        <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                    </button>
-                </div>
-                <h3 class="text-sm font-medium text-gray-900 truncate">Minimalist Wrist Watch</h3>
-                <p class="text-sm font-bold text-gray-900 mt-1">$129.99</p>
-            </a>
 
         </div>
     </section>
