@@ -243,10 +243,9 @@
     });
 
     // ---- Logout (demo) ----
-    document.getElementById('logoutBtn').addEventListener('click', () => {
-        // NOTE: real logout destroys the PHP session in the backend phase.
-        window.location.href = 'login.php';
-    });
+  document.getElementById('logoutBtn').addEventListener('click', () => {
+    window.location.href = 'logout.php';
+});
     
 
      // ---- Connect header search to the real search page ----

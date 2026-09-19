@@ -38,7 +38,7 @@
             </a>
         </nav>
         <div class="p-3 border-t border-gray-800">
-            <a href="../login.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium text-red-400">
+           <a href="../logout.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium text-red-400">
                 <i data-lucide="log-out" class="w-4 h-4"></i> Log Out
             </a>
         </div>
