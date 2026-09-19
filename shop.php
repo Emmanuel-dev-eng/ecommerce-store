@@ -1,3 +1,48 @@
+<?php
+// ============================================
+// shop.php — top section
+// Fetches all active products with their primary image
+// ============================================
+
+require 'config/db.php';
+
+// This query joins three tables together:
+// - products: the core product info
+// - product_images: to get each product's main photo
+// - categories: to show the category name
+//
+// LEFT JOIN means: "include the product even if it has no matching
+// image row" (so a product never disappears just because it's missing
+// a photo — it would just show blank instead).
+//
+// The "AND product_images.is_primary = 1" ensures we only grab
+// the ONE image marked as primary per product, not duplicates.
+
+$sql = "
+    SELECT 
+        products.id,
+        products.name,
+        products.slug,
+        products.base_price,
+        categories.name AS category_name,
+        product_images.image_url
+    FROM products
+    LEFT JOIN product_images 
+        ON products.id = product_images.product_id 
+        AND product_images.is_primary = 1
+    LEFT JOIN categories 
+        ON products.category_id = categories.id
+    WHERE products.is_active = 1
+    ORDER BY products.created_at DESC
+";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute();
+$products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// fetchAll() grabs EVERY matching row, as an array of associative arrays.
+// So $products[0]['name'], $products[1]['name'], etc.
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -78,7 +123,7 @@
     <div class="flex items-center justify-between mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">Shop All</h1>
-            <p class="text-sm text-gray-500 mt-1">128 products</p>
+            <p class="text-sm text-gray-500 mt-1"><?= count($products) ?> products</p>
         </div>
 
         <!-- Filter button (mobile only) -->
@@ -161,77 +206,19 @@
 
             <div class="grid grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
 
-                <a href="product.php?id=1" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=400&q=80" alt="Classic White Sneakers"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Classic White Sneakers</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$59.99</p>
-                </a>
-
-                <a href="product.php?id=2" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=400&q=80" alt="Oversized Denim Jacket"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Oversized Denim Jacket</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$89.99</p>
-                </a>
-
-                <a href="product.php?id=3" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1523381210434-271e8be1f52b?w=400&q=80" alt="Leather Crossbody Bag"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Leather Crossbody Bag</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$74.99</p>
-                </a>
-
-                <a href="product.php?id=4" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1434389677669-e08b4cac3105?w=400&q=80" alt="Minimalist Wrist Watch"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Minimalist Wrist Watch</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$129.99</p>
-                </a>
-
-                <a href="product.php?id=5" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&q=80" alt="Wool Blend Overcoat"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Wool Blend Overcoat</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$149.99</p>
-                </a>
-
-                <a href="product.php?id=6" class="group">
-                    <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
-                        <img src="https://images.unsplash.com/photo-1560343090-f0409e92791a?w=400&q=80" alt="Running Sneakers"
-                             class="w-full h-full object-cover group-hover:scale-105 transition">
-                        <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
-                            <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
-                        </button>
-                    </div>
-                    <h3 class="text-sm font-medium text-gray-900 truncate">Running Sneakers</h3>
-                    <p class="text-sm font-bold text-gray-900 mt-1">$99.99</p>
-                </a>
+               <?php foreach ($products as $product): ?>
+    <a href="product.php?id=<?= $product['id'] ?>" class="group">
+        <div class="relative rounded-xl overflow-hidden bg-gray-100 aspect-square mb-3">
+            <img src="<?= htmlspecialchars($product['image_url']) ?>" alt="<?= htmlspecialchars($product['name']) ?>"
+                 class="w-full h-full object-cover group-hover:scale-105 transition">
+            <button class="absolute top-2 right-2 bg-white/90 rounded-full p-2 hover:bg-white">
+                <i data-lucide="heart" class="w-4 h-4 text-gray-700"></i>
+            </button>
+        </div>
+        <h3 class="text-sm font-medium text-gray-900 truncate"><?= htmlspecialchars($product['name']) ?></h3>
+        <p class="text-sm font-bold text-gray-900 mt-1">$<?= number_format($product['base_price'], 2) ?></p>
+    </a>
+<?php endforeach; ?>
 
             </div>
 

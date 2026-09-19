@@ -1,10 +1,62 @@
+<?php
+// ============================================
+// product.php — top section
+// ============================================
+
+require 'config/db.php';
+
+// Get the product ID from the URL. (int) forces it to be a whole number,
+// which protects against someone typing something weird into the URL.
+$productId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+// If no valid ID was given, redirect to the shop page instead of
+// showing a broken page.
+if ($productId <= 0) {
+    header("Location: shop.php");
+    exit;
+}
+
+// Fetch the main product info + category name
+$stmt = $pdo->prepare("
+    SELECT products.*, categories.name AS category_name
+    FROM products
+    LEFT JOIN categories ON products.category_id = categories.id
+    WHERE products.id = ? AND products.is_active = 1
+");
+$stmt->execute([$productId]);
+$product = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// If no product was found with that ID, don't show a broken page —
+// send them somewhere sensible instead.
+if (!$product) {
+    header("Location: 404.php");
+    exit;
+}
+
+// Fetch all images for this product, ordered so the primary shows first
+$imagesStmt = $pdo->prepare("
+    SELECT image_url, is_primary 
+    FROM product_images 
+    WHERE product_id = ? 
+    ORDER BY is_primary DESC, sort_order ASC
+");
+$imagesStmt->execute([$productId]);
+$images = $imagesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch all variants for this product (size/color combos, price, stock)
+$variantsStmt = $pdo->prepare("
+    SELECT * FROM product_variants WHERE product_id = ?
+");
+$variantsStmt->execute([$productId]);
+$variants = $variantsStmt->fetchAll(PDO::FETCH_ASSOC);
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Classic White Sneakers | ShopName</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+<title><?= htmlspecialchars($product['name']) ?> | ShopName</title>    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans">
@@ -113,8 +165,8 @@
 
         <!-- ===================== PRODUCT INFO ===================== -->
         <div>
-            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Shoes</p>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 mb-3">Classic White Sneakers</h1>
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2"><?= htmlspecialchars($product['category_name'] ?? 'Uncategorized') ?></p>
+<h1 class="text-2xl sm:text-3xl font-bold text-gray-900 mb-3"><?= htmlspecialchars($product['name']) ?></h1>
 
             <div class="flex items-center gap-2 mb-4">
                 <div class="flex text-yellow-400">
@@ -127,12 +179,10 @@
                 <span class="text-xs text-gray-500">4.2 (86 reviews)</span>
             </div>
 
-            <p id="currentPrice" class="text-2xl font-bold text-gray-900 mb-5">$59.99</p>
-
-            <p class="text-sm text-gray-600 leading-relaxed mb-6">
-                Clean, versatile sneakers built with a breathable canvas upper and cushioned sole.
-                Designed to go from daywear to weekend errands without missing a step.
-            </p>
+<p id="currentPrice" class="text-2xl font-bold text-gray-900 mb-5">$<?= number_format($product['base_price'], 2) ?></p>
+        <p class="text-sm text-gray-600 leading-relaxed mb-6">
+    <?= nl2br(htmlspecialchars($product['description'])) ?>
+</p>
 
             <!-- Color picker -->
             <div class="mb-6">
@@ -178,9 +228,11 @@
                         <i data-lucide="plus" class="w-4 h-4"></i>
                     </button>
                 </div>
-                <p id="stockNote" class="text-xs text-green-600 mt-2 flex items-center gap-1">
-                    <i data-lucide="check-circle" class="w-3 h-3"></i> In stock — 14 available
-                </p>
+                <?php $firstVariantStock = $variants[0]['stock_quantity'] ?? 0; ?>
+<p id="stockNote" class="text-xs mt-2 flex items-center gap-1 <?= $firstVariantStock > 0 ? 'text-green-600' : 'text-red-500' ?>">
+    <i data-lucide="<?= $firstVariantStock > 0 ? 'check-circle' : 'x-circle' ?>" class="w-3 h-3"></i>
+    <?= $firstVariantStock > 0 ? "In stock — {$firstVariantStock} available" : 'Out of stock' ?>
+</p>
             </div>
 
             <!-- Actions -->
