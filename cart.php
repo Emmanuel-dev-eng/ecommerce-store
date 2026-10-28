@@ -1,5 +1,138 @@
-<?php require 'config/auth_check.php'; ?>
+<?php
+// ============================================
+// cart.php
+// The cart lives in the DATABASE (cart_items table), so it
+// survives logout, login, and closing the browser.
+// ============================================
 
+require 'config/auth_check.php'; // starts the session + blocks logged-out visitors
+require 'config/db.php';
+
+$userId = (int)$_SESSION['user_id'];
+
+// ---- Handle form submissions (update quantity / remove) ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action    = $_POST['action'] ?? '';
+    $variantId = (int)($_POST['variant_id'] ?? 0);
+
+    if ($variantId > 0) {
+
+        if ($action === 'remove') {
+            // "user_id = ?" means a user can only delete from THEIR OWN cart
+            $stmt = $pdo->prepare("DELETE FROM cart_items WHERE user_id = ? AND variant_id = ?");
+            $stmt->execute([$userId, $variantId]);
+
+        } elseif ($action === 'update') {
+            $quantity = (int)($_POST['quantity'] ?? 0);
+
+            // Real stock for this variant, from the database
+            $stockStmt = $pdo->prepare("SELECT stock_quantity FROM product_variants WHERE id = ?");
+            $stockStmt->execute([$variantId]);
+            $stock = (int)$stockStmt->fetchColumn();
+
+            // min() picks the smaller number, so we never exceed stock
+            $newQty = min($quantity, $stock);
+
+            if ($newQty > 0) {
+                $stmt = $pdo->prepare("UPDATE cart_items SET quantity = ? WHERE user_id = ? AND variant_id = ?");
+                $stmt->execute([$newQty, $userId, $variantId]);
+            } else {
+                $stmt = $pdo->prepare("DELETE FROM cart_items WHERE user_id = ? AND variant_id = ?");
+                $stmt->execute([$userId, $variantId]);
+            }
+        }
+    }
+
+    // Post/Redirect/Get, so refreshing doesn't resubmit the form
+    header("Location: cart.php");
+    exit;
+}
+
+// ---- Build the list of cart items from the database ----
+$cartItems = [];
+$subtotal = 0;
+$itemCount = 0;
+
+// One query: this user's cart rows, joined with product info + image
+$stmt = $pdo->prepare("
+    SELECT
+        ci.variant_id,
+        ci.quantity,
+        pv.sku,
+        pv.price,
+        pv.stock_quantity,
+        p.name,
+        pi.image_url
+    FROM cart_items ci
+    JOIN product_variants pv ON ci.variant_id = pv.id
+    JOIN products p ON pv.product_id = p.id
+    LEFT JOIN product_images pi
+        ON p.id = pi.product_id AND pi.is_primary = 1
+    WHERE ci.user_id = ? AND p.is_active = 1
+    ORDER BY ci.added_at DESC
+");
+$stmt->execute([$userId]);
+$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch size/color labels (e.g. "M, White") for these variants
+$labels = [];
+if (!empty($rows)) {
+    $ids = array_column($rows, 'variant_id'); // just the list of variant IDs
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    $attrStmt = $pdo->prepare("
+        SELECT vav.variant_id, av.value
+        FROM variant_attribute_values vav
+        JOIN attribute_values av ON vav.attribute_value_id = av.id
+        WHERE vav.variant_id IN ($placeholders)
+    ");
+    $attrStmt->execute($ids);
+    foreach ($attrStmt->fetchAll(PDO::FETCH_ASSOC) as $attr) {
+        $labels[$attr['variant_id']][] = $attr['value'];
+    }
+}
+
+// Prepare these once, then reuse them inside the loop
+$fixStmt  = $pdo->prepare("UPDATE cart_items SET quantity = ? WHERE user_id = ? AND variant_id = ?");
+$dropStmt = $pdo->prepare("DELETE FROM cart_items WHERE user_id = ? AND variant_id = ?");
+
+foreach ($rows as $row) {
+    $vid   = (int)$row['variant_id'];
+    $stock = (int)$row['stock_quantity'];
+    $qty   = min((int)$row['quantity'], $stock);
+
+    if ($qty <= 0) {
+        // Sold out since it was added, so remove it from the cart
+        $dropStmt->execute([$userId, $vid]);
+        continue;
+    }
+
+    if ($qty !== (int)$row['quantity']) {
+        // Stock dropped below what's in the cart, so correct it in the database
+        $fixStmt->execute([$qty, $userId, $vid]);
+    }
+
+    $lineTotal = $row['price'] * $qty;
+    $subtotal += $lineTotal;
+    $itemCount += $qty;
+
+    $cartItems[] = [
+        'variant_id' => $vid,
+        'name'       => $row['name'],
+        'label'      => isset($labels[$vid]) ? implode(', ', $labels[$vid]) : $row['sku'],
+        'price'      => $row['price'],
+        'qty'        => $qty,
+        'stock'      => $stock,
+        'image'      => $row['image_url'],
+        'lineTotal'  => $lineTotal,
+    ];
+}
+
+// ---- Totals (same rules as before; they'll move to Settings later) ----
+$shipping = ($subtotal == 0) ? 0 : ($subtotal >= 75 ? 0 : 6.99);
+$tax = $subtotal * 0.075;
+$total = $subtotal + $shipping + $tax;
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -30,7 +163,9 @@
                 </button>
                 <a href="cart.php" class="relative text-gray-900">
                     <i data-lucide="shopping-cart" class="w-5 h-5"></i>
-                    <span id="cartBadge" class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">2</span>
+                    <?php if ($itemCount > 0): ?>
+                        <span class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full min-w-4 h-4 px-1 flex items-center justify-center"><?= $itemCount ?></span>
+                    <?php endif; ?>
                 </a>
                 <a href="account.php" class="hidden md:block text-gray-700 hover:text-black">
                     <i data-lucide="user" class="w-5 h-5"></i>
@@ -82,17 +217,65 @@
 
         <!-- ===================== CART ITEMS ===================== -->
         <div class="lg:col-span-2">
-            <div id="cartItemsContainer" class="space-y-4">
-                <!-- Cart items are injected here by JavaScript -->
-            </div>
 
-            <div id="emptyCartMsg" class="hidden text-center py-16">
-                <i data-lucide="shopping-cart" class="w-12 h-12 text-gray-300 mx-auto mb-4"></i>
-                <p class="text-gray-500 mb-4">Your cart is empty.</p>
-                <a href="shop.php" class="inline-block bg-black text-white text-sm font-semibold px-6 py-3 rounded-lg hover:bg-gray-800">
-                    Continue Shopping
-                </a>
-            </div>
+            <?php if (empty($cartItems)): ?>
+                <div class="text-center py-16">
+                    <i data-lucide="shopping-cart" class="w-12 h-12 text-gray-300 mx-auto mb-4"></i>
+                    <p class="text-gray-500 mb-4">Your cart is empty.</p>
+                    <a href="shop.php" class="inline-block bg-black text-white text-sm font-semibold px-6 py-3 rounded-lg hover:bg-gray-800">
+                        Continue Shopping
+                    </a>
+                </div>
+            <?php else: ?>
+                <div class="space-y-4">
+                    <?php foreach ($cartItems as $item): ?>
+                        <div class="bg-white rounded-2xl border border-gray-200 p-4 flex gap-4 items-center">
+                            <img src="<?= htmlspecialchars($item['image'] ?? '') ?>" alt="<?= htmlspecialchars($item['name']) ?>"
+                                 class="w-20 h-20 rounded-xl object-cover flex-shrink-0 bg-gray-100">
+
+                            <div class="flex-1 min-w-0">
+                                <h3 class="text-sm font-semibold text-gray-900 truncate"><?= htmlspecialchars($item['name']) ?></h3>
+                                <p class="text-xs text-gray-500 mt-0.5"><?= htmlspecialchars($item['label']) ?></p>
+                                <p class="text-sm font-bold text-gray-900 mt-2">$<?= number_format($item['price'], 2) ?></p>
+                                <?php if ($item['qty'] >= $item['stock']): ?>
+                                    <p class="text-[11px] text-orange-500 mt-1">Maximum available</p>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="flex flex-col items-end gap-3">
+                                <!-- Remove -->
+                                <form method="POST">
+                                    <input type="hidden" name="action" value="remove">
+                                    <input type="hidden" name="variant_id" value="<?= $item['variant_id'] ?>">
+                                    <button type="submit" class="text-gray-400 hover:text-red-500" aria-label="Remove item">
+                                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                    </button>
+                                </form>
+
+                                <!-- Quantity: each button sends a different quantity value -->
+                                <form method="POST" class="flex items-center border border-gray-300 rounded-lg">
+                                    <input type="hidden" name="action" value="update">
+                                    <input type="hidden" name="variant_id" value="<?= $item['variant_id'] ?>">
+
+                                    <button type="submit" name="quantity" value="<?= $item['qty'] - 1 ?>"
+                                        <?= $item['qty'] <= 1 ? 'disabled' : '' ?>
+                                        class="w-8 h-8 flex items-center justify-center text-gray-600 hover:bg-gray-100 rounded-l-lg disabled:opacity-30 disabled:cursor-not-allowed">
+                                        <i data-lucide="minus" class="w-3 h-3"></i>
+                                    </button>
+
+                                    <span class="w-8 text-center text-xs font-semibold"><?= $item['qty'] ?></span>
+
+                                    <button type="submit" name="quantity" value="<?= $item['qty'] + 1 ?>"
+                                        <?= $item['qty'] >= $item['stock'] ? 'disabled' : '' ?>
+                                        class="w-8 h-8 flex items-center justify-center text-gray-600 hover:bg-gray-100 rounded-r-lg disabled:opacity-30 disabled:cursor-not-allowed">
+                                        <i data-lucide="plus" class="w-3 h-3"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </div>
 
         <!-- ===================== ORDER SUMMARY ===================== -->
@@ -103,39 +286,25 @@
                 <div class="space-y-3 text-sm">
                     <div class="flex justify-between text-gray-600">
                         <span>Subtotal</span>
-                        <span id="subtotalValue">$0.00</span>
+                        <span>$<?= number_format($subtotal, 2) ?></span>
                     </div>
                     <div class="flex justify-between text-gray-600">
                         <span>Shipping</span>
-                        <span id="shippingValue">$0.00</span>
+                        <span><?= $shipping == 0 ? 'Free' : '$' . number_format($shipping, 2) ?></span>
                     </div>
                     <div class="flex justify-between text-gray-600">
                         <span>Tax (est.)</span>
-                        <span id="taxValue">$0.00</span>
+                        <span>$<?= number_format($tax, 2) ?></span>
                     </div>
                 </div>
 
                 <div class="border-t border-gray-100 mt-4 pt-4 flex justify-between font-bold text-gray-900">
                     <span>Total</span>
-                    <span id="totalValue">$0.00</span>
+                    <span>$<?= number_format($total, 2) ?></span>
                 </div>
 
-                <!-- Promo code -->
-                <div class="mt-5">
-                    <label class="text-xs font-semibold text-gray-500 mb-2 block">Promo Code</label>
-                    <div class="flex gap-2">
-                        <input type="text" placeholder="Enter code" id="promoInput"
-                            class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black">
-                        <button id="promoApply" class="bg-gray-100 text-gray-700 text-sm font-medium px-4 rounded-lg hover:bg-gray-200">
-                            Apply
-                        </button>
-                    </div>
-                    <!-- NOTE: promo codes are validated visually here. Checking
-                         a real code against the database happens in the PHP phase. -->
-                    <p id="promoMsg" class="hidden text-xs mt-2"></p>
-                </div>
-
-                <a href="checkout.php" id="checkoutBtn" class="mt-6 w-full bg-black text-white font-semibold py-3.5 rounded-lg hover:bg-gray-800 transition flex items-center justify-center gap-2">
+                <a href="checkout.php"
+                   class="mt-6 w-full bg-black text-white font-semibold py-3.5 rounded-lg hover:bg-gray-800 transition flex items-center justify-center gap-2 <?= empty($cartItems) ? 'pointer-events-none opacity-40' : '' ?>">
                     Proceed to Checkout
                     <i data-lucide="arrow-right" class="w-4 h-4"></i>
                 </a>
@@ -151,7 +320,8 @@
 <!-- ===================== FOOTER ===================== -->
 <footer class="bg-gray-900 text-gray-300 mt-16">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-8">            <div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-8">
+            <div>
                 <h3 class="text-white font-bold text-lg mb-3">ShopName</h3>
                 <p class="text-sm text-gray-400">Quality products, delivered to your door.</p>
             </div>
@@ -170,12 +340,12 @@
                 </ul>
             </div>
             <div>
-    <h4 class="text-white font-semibold text-sm mb-3">Legal</h4>
-    <ul class="space-y-2 text-sm">
-        <li><a href="terms.php" class="hover:text-white">Terms of Service</a></li>
-        <li><a href="privacy.php" class="hover:text-white">Privacy Policy</a></li>
-    </ul>
-</div>
+                <h4 class="text-white font-semibold text-sm mb-3">Legal</h4>
+                <ul class="space-y-2 text-sm">
+                    <li><a href="terms.php" class="hover:text-white">Terms of Service</a></li>
+                    <li><a href="privacy.php" class="hover:text-white">Privacy Policy</a></li>
+                </ul>
+            </div>
             <div>
                 <h4 class="text-white font-semibold text-sm mb-3">Follow Us</h4>
                 <div class="flex gap-4">
@@ -201,144 +371,16 @@
         document.getElementById('searchBar').classList.toggle('hidden');
     });
 
-    // ---- Sample cart data ----
-    // NOTE: this array simulates what will later come from the database
-    // via PHP sessions (cart_items table). Everything below (quantity,
-    // totals, removal) is fully working client-side logic.
-    let cart = [
-        {
-            id: 1,
-            name: 'Classic White Sneakers',
-            variant: 'White, Size M',
-            price: 59.99,
-            qty: 1,
-            image: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=200&q=80'
-        },
-        {
-            id: 2,
-            name: 'Oversized Denim Jacket',
-            variant: 'Blue, Size L',
-            price: 89.99,
-            qty: 1,
-            image: 'https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=200&q=80'
-        }
-    ];
-
-    const container = document.getElementById('cartItemsContainer');
-    const emptyMsg = document.getElementById('emptyCartMsg');
-    const cartBadge = document.getElementById('cartBadge');
-    const checkoutBtn = document.getElementById('checkoutBtn');
-
-    function renderCart() {
-        container.innerHTML = '';
-
-        if (cart.length === 0) {
-            emptyMsg.classList.remove('hidden');
-            checkoutBtn.classList.add('pointer-events-none', 'opacity-40');
-        } else {
-            emptyMsg.classList.add('hidden');
-            checkoutBtn.classList.remove('pointer-events-none', 'opacity-40');
-        }
-
-        cart.forEach(item => {
-            const row = document.createElement('div');
-            row.className = 'bg-white rounded-2xl border border-gray-200 p-4 flex gap-4 items-center';
-            row.innerHTML = `
-                <img src="${item.image}" alt="${item.name}" class="w-20 h-20 rounded-xl object-cover flex-shrink-0">
-                <div class="flex-1 min-w-0">
-                    <h3 class="text-sm font-semibold text-gray-900 truncate">${item.name}</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">${item.variant}</p>
-                    <p class="text-sm font-bold text-gray-900 mt-2">$${item.price.toFixed(2)}</p>
-                </div>
-                <div class="flex flex-col items-end gap-3">
-                    <button class="remove-btn text-gray-400 hover:text-red-500" data-id="${item.id}">
-                        <i data-lucide="trash-2" class="w-4 h-4"></i>
-                    </button>
-                    <div class="flex items-center border border-gray-300 rounded-lg">
-                        <button class="qty-minus w-8 h-8 flex items-center justify-center text-gray-600 hover:bg-gray-100 rounded-l-lg" data-id="${item.id}">
-                            <i data-lucide="minus" class="w-3 h-3"></i>
-                        </button>
-                        <span class="w-8 text-center text-xs font-semibold">${item.qty}</span>
-                        <button class="qty-plus w-8 h-8 flex items-center justify-center text-gray-600 hover:bg-gray-100 rounded-r-lg" data-id="${item.id}">
-                            <i data-lucide="plus" class="w-3 h-3"></i>
-                        </button>
-                    </div>
-                </div>
-            `;
-            container.appendChild(row);
-        });
-
-        lucide.createIcons();
-        attachRowEvents();
-        updateTotals();
-    }
-
-    function attachRowEvents() {
-        document.querySelectorAll('.qty-plus').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const item = cart.find(i => i.id == btn.dataset.id);
-                if (item.qty < 10) item.qty++;
-                renderCart();
-            });
-        });
-        document.querySelectorAll('.qty-minus').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const item = cart.find(i => i.id == btn.dataset.id);
-                if (item.qty > 1) item.qty--;
-                renderCart();
-            });
-        });
-        document.querySelectorAll('.remove-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                cart = cart.filter(i => i.id != btn.dataset.id);
-                renderCart();
-            });
-        });
-    }
-
-    function updateTotals() {
-        const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
-        const shipping = subtotal === 0 ? 0 : (subtotal >= 75 ? 0 : 6.99);
-        const tax = subtotal * 0.075;
-        const total = subtotal + shipping + tax;
-        const itemCount = cart.reduce((sum, item) => sum + item.qty, 0);
-
-        document.getElementById('subtotalValue').textContent = `$${subtotal.toFixed(2)}`;
-        document.getElementById('shippingValue').textContent = shipping === 0 ? 'Free' : `$${shipping.toFixed(2)}`;
-        document.getElementById('taxValue').textContent = `$${tax.toFixed(2)}`;
-        document.getElementById('totalValue').textContent = `$${total.toFixed(2)}`;
-        cartBadge.textContent = itemCount;
-    }
-
-    // ---- Promo code (visual validation demo) ----
-    document.getElementById('promoApply').addEventListener('click', () => {
-        const code = document.getElementById('promoInput').value.trim().toUpperCase();
-        const msg = document.getElementById('promoMsg');
-        msg.classList.remove('hidden');
-        if (code === 'SAVE10') {
-            msg.className = 'text-xs mt-2 text-green-600';
-            msg.textContent = 'Promo code applied! 10% off (demo only).';
-        } else if (code === '') {
-            msg.className = 'text-xs mt-2 text-gray-400';
-            msg.textContent = 'Enter a code first.';
-        } else {
-            msg.className = 'text-xs mt-2 text-red-500';
-            msg.textContent = 'Invalid or expired code.';
+    // ---- Connect header search to the real search page ----
+    const searchInputField = document.querySelector('#searchBar input');
+    searchInputField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const term = searchInputField.value.trim();
+            if (term) {
+                window.location.href = `search.php?q=${encodeURIComponent(term)}`;
+            }
         }
     });
-
-    renderCart();
-
-     // ---- Connect header search to the real search page ----
-const searchInputField = document.querySelector('#searchBar input');
-searchInputField.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-        const term = searchInputField.value.trim();
-        if (term) {
-            window.location.href = `search.php?q=${encodeURIComponent(term)}`;
-        }
-    }
-});
 </script>
 
 </body>

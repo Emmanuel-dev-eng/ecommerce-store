@@ -235,16 +235,26 @@ $variants = $variantsStmt->fetchAll(PDO::FETCH_ASSOC);
 </p>
             </div>
 
-            <!-- Actions -->
-            <div class="flex gap-3 mb-6">
-                <button id="addToCartBtn" class="flex-1 bg-black text-white font-semibold py-3.5 rounded-lg hover:bg-gray-800 transition flex items-center justify-center gap-2">
-                    <i data-lucide="shopping-cart" class="w-4 h-4"></i>
-                    Add to Cart
-                </button>
-                <button id="wishlistBtn" class="w-14 border border-gray-300 rounded-lg flex items-center justify-center hover:border-black">
-                    <i data-lucide="heart" class="w-5 h-5 text-gray-700"></i>
-                </button>
-            </div>
+            
+          <!-- Actions -->
+<?php
+$defaultVariant = $variants[0] ?? null;
+$inStock = $defaultVariant && $defaultVariant['stock_quantity'] > 0;
+?>
+<form action="cart-add.php" method="POST" class="flex gap-3 mb-6">
+    <input type="hidden" name="variant_id" value="<?= (int)($defaultVariant['id'] ?? 0) ?>">
+    <input type="hidden" name="quantity" id="qtyInput" value="1">
+
+    <button type="submit" id="addToCartBtn" <?= $inStock ? '' : 'disabled' ?>
+        class="flex-1 bg-black text-white font-semibold py-3.5 rounded-lg hover:bg-gray-800 transition flex items-center justify-center gap-2 <?= $inStock ? '' : 'opacity-40 cursor-not-allowed' ?>">
+        <i data-lucide="shopping-cart" class="w-4 h-4"></i>
+        <?= $inStock ? 'Add to Cart' : 'Out of Stock' ?>
+    </button>
+
+    <button type="button" id="wishlistBtn" class="w-14 border border-gray-300 rounded-lg flex items-center justify-center hover:border-black">
+        <i data-lucide="heart" class="w-5 h-5 text-gray-700"></i>
+    </button>
+</form>
 
             <!-- Toast confirmation -->
             <div id="cartToast" class="hidden items-center gap-2 bg-green-50 border border-green-200 text-green-700 text-sm rounded-lg px-4 py-3 mb-6">
@@ -362,33 +372,19 @@ $variants = $variantsStmt->fetchAll(PDO::FETCH_ASSOC);
         });
     });
 
-    // ---- Quantity stepper ----
-    const qtyValue = document.getElementById('qtyValue');
-    let qty = 1;
-    const maxStock = 14;
-    document.getElementById('qtyMinus').addEventListener('click', () => {
-        if (qty > 1) { qty--; qtyValue.textContent = qty; }
-    });
-    document.getElementById('qtyPlus').addEventListener('click', () => {
-        if (qty < maxStock) { qty++; qtyValue.textContent = qty; }
-    });
+// ---- Quantity stepper ----
+const qtyValue = document.getElementById('qtyValue');
+const qtyInput = document.getElementById('qtyInput'); // the hidden form field
+let qty = 1;
+const maxStock = <?= (int)($variants[0]['stock_quantity'] ?? 0) ?>; // real stock from the database
+document.getElementById('qtyMinus').addEventListener('click', () => {
+    if (qty > 1) { qty--; qtyValue.textContent = qty; qtyInput.value = qty; }
+});
+document.getElementById('qtyPlus').addEventListener('click', () => {
+    if (qty < maxStock) { qty++; qtyValue.textContent = qty; qtyInput.value = qty; }
+});
 
-    // ---- Add to cart (client-side validation + confirmation) ----
-    const cartToast = document.getElementById('cartToast');
-    const cartToastText = document.getElementById('cartToastText');
-    document.getElementById('addToCartBtn').addEventListener('click', () => {
-        if (!chosenSize) {
-            sizeWarning.classList.remove('hidden');
-            return;
-        }
-        cartToastText.textContent = `Added ${qty} × Classic White Sneakers (${selectedColorLabel.textContent}, ${chosenSize}) to cart!`;
-        cartToast.classList.remove('hidden');
-        cartToast.classList.add('flex');
-        // NOTE: this confirms the interaction visually. Actually saving
-        // the item and persisting it across pages needs PHP sessions +
-        // the database — that's wired up in the backend phase.
-        setTimeout(() => cartToast.classList.add('hidden'), 4000);
-    });
+
 
     // ---- Wishlist toggle ----
     const wishlistBtn = document.getElementById('wishlistBtn');
