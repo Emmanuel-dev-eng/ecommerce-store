@@ -1,4 +1,8 @@
-<?php require 'config/auth_check.php'; ?>
+<?php
+require 'config/auth_check.php';
+require 'config/db.php';
+require 'config/cart_count.php';
+?>
 
 <!DOCTYPE html>
 <html lang="en">
@@ -19,7 +23,9 @@
             <div class="flex items-center gap-4">
                 <a href="cart.php" class="relative text-gray-700 hover:text-black">
                     <i data-lucide="shopping-cart" class="w-5 h-5"></i>
-                    <span class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">2</span>
+                       <?php if ($cartCount > 0): ?>
+       <span class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full min-w-4 h-4 px-1 flex items-center justify-center"><?= $cartCount ?></span>
+   <?php endif; ?>
                 </a>
                 <a href="account.php" class="text-gray-700 hover:text-black">
                     <i data-lucide="user" class="w-5 h-5"></i>
