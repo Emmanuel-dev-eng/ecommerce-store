@@ -1,9 +1,75 @@
 <?php
+// ============================================
+// orders.php
+// Shows the logged-in customer's REAL orders.
+// ============================================
+
 require 'config/auth_check.php';
 require 'config/db.php';
 require 'config/cart_count.php';
-?>
 
+$userId = (int)$_SESSION['user_id'];
+
+// ---- Status filter (whitelist) ----
+$allowedStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+$filter = $_GET['status'] ?? 'all';
+
+// If the value isn't 'all' or one of our known statuses, ignore it.
+if ($filter !== 'all' && !in_array($filter, $allowedStatuses, true)) {
+    $filter = 'all';
+}
+
+// ---- Fetch this user's orders ----
+// The two inner SELECTs (subqueries) calculate, per order, the number
+// of items and the first product's picture.
+$sql = "
+    SELECT
+        o.id, o.order_number, o.status, o.total_amount, o.created_at,
+        (SELECT COALESCE(SUM(oi.quantity), 0)
+           FROM order_items oi
+          WHERE oi.order_id = o.id) AS item_count,
+        (SELECT pi.image_url
+           FROM order_items oi
+           JOIN product_variants pv ON oi.variant_id = pv.id
+           JOIN product_images pi ON pi.product_id = pv.product_id AND pi.is_primary = 1
+          WHERE oi.order_id = o.id
+          ORDER BY oi.id
+          LIMIT 1) AS image_url
+    FROM orders o
+    WHERE o.user_id = ?
+";
+$params = [$userId];
+
+if ($filter !== 'all') {
+    $sql .= " AND o.status = ?";
+    $params[] = $filter;
+}
+
+$sql .= " ORDER BY o.created_at DESC";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Badge colors per status
+$statusStyles = [
+    'pending'    => 'bg-gray-100 text-gray-600',
+    'processing' => 'bg-yellow-50 text-yellow-700',
+    'shipped'    => 'bg-blue-50 text-blue-600',
+    'delivered'  => 'bg-green-50 text-green-600',
+    'cancelled'  => 'bg-red-50 text-red-600',
+];
+
+// Tabs: URL value => label
+$tabs = [
+    'all'        => 'All Orders',
+    'pending'    => 'Pending',
+    'processing' => 'Processing',
+    'shipped'    => 'Shipped',
+    'delivered'  => 'Delivered',
+    'cancelled'  => 'Cancelled',
+];
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -34,9 +100,9 @@ require 'config/cart_count.php';
                 </button>
                 <a href="cart.php" class="relative text-gray-700 hover:text-black">
                     <i data-lucide="shopping-cart" class="w-5 h-5"></i>
-                       <?php if ($cartCount > 0): ?>
-       <span class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full min-w-4 h-4 px-1 flex items-center justify-center"><?= $cartCount ?></span>
-   <?php endif; ?>
+                    <?php if ($cartCount > 0): ?>
+                        <span class="absolute -top-2 -right-2 bg-black text-white text-[10px] font-bold rounded-full min-w-4 h-4 px-1 flex items-center justify-center"><?= $cartCount ?></span>
+                    <?php endif; ?>
                 </a>
                 <a href="account.php" class="hidden md:block text-gray-900">
                     <i data-lucide="user" class="w-5 h-5"></i>
@@ -84,36 +150,104 @@ require 'config/cart_count.php';
 
     <h1 class="text-2xl font-bold text-gray-900 mb-6">My Orders</h1>
 
-    <!-- ===================== STATUS FILTER TABS ===================== -->
+    <!-- ===================== STATUS TABS (real links) ===================== -->
     <div class="flex items-center gap-2 mb-6 overflow-x-auto pb-1">
-        <button class="status-tab whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold bg-black text-white" data-status="all">
-            All Orders
-        </button>
-        <button class="status-tab whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="pending">
-            Pending
-        </button>
-        <button class="status-tab whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="processing">
-            Processing
-        </button>
-        <button class="status-tab whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="shipped">
-            Shipped
-        </button>
-        <button class="status-tab whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="delivered">
-            Delivered
-        </button>
+        <?php foreach ($tabs as $value => $label): ?>
+            <a href="orders.php<?= $value === 'all' ? '' : '?status=' . $value ?>"
+               class="whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold <?= $filter === $value
+                    ? 'bg-black text-white'
+                    : 'bg-white border border-gray-300 text-gray-600 hover:border-black' ?>">
+                <?= $label ?>
+            </a>
+        <?php endforeach; ?>
     </div>
 
     <!-- ===================== ORDERS LIST ===================== -->
-    <div id="ordersList" class="space-y-4">
-        <!-- Orders injected by JS -->
-    </div>
-
-    <div id="noOrdersMsg" class="hidden text-center py-16">
-        <i data-lucide="package-x" class="w-12 h-12 text-gray-300 mx-auto mb-4"></i>
-        <p class="text-gray-500">No orders in this category.</p>
-    </div>
+    <?php if (empty($orders)): ?>
+        <div class="text-center py-16">
+            <i data-lucide="package-x" class="w-12 h-12 text-gray-300 mx-auto mb-4"></i>
+            <p class="text-gray-500 mb-4">
+                <?= $filter === 'all' ? "You haven't placed any orders yet." : 'No orders in this category.' ?>
+            </p>
+            <?php if ($filter === 'all'): ?>
+                <a href="shop.php" class="inline-block bg-black text-white text-sm font-semibold px-6 py-3 rounded-lg hover:bg-gray-800">
+                    Start Shopping
+                </a>
+            <?php endif; ?>
+        </div>
+    <?php else: ?>
+        <div class="space-y-4">
+            <?php foreach ($orders as $o): ?>
+                <a href="order-detail.php?order=<?= urlencode($o['order_number']) ?>"
+                   class="block bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 hover:border-gray-300 transition">
+                    <div class="flex items-center gap-4">
+                        <img src="<?= htmlspecialchars($o['image_url'] ?? '') ?>" alt=""
+                             class="w-16 h-16 rounded-xl object-cover flex-shrink-0 bg-gray-100">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center justify-between gap-2 mb-1">
+                                <p class="text-sm font-semibold text-gray-900">#<?= htmlspecialchars($o['order_number']) ?></p>
+                                <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 <?= $statusStyles[$o['status']] ?? '' ?>">
+                                    <?= ucfirst($o['status']) ?>
+                                </span>
+                            </div>
+                            <p class="text-xs text-gray-500">
+                                <?= date('M j, Y', strtotime($o['created_at'])) ?> ·
+                                <?= (int)$o['item_count'] ?> item<?= $o['item_count'] == 1 ? '' : 's' ?>
+                            </p>
+                            <p class="text-sm font-bold text-gray-900 mt-1">$<?= number_format($o['total_amount'], 2) ?></p>
+                        </div>
+                        <i data-lucide="chevron-right" class="w-4 h-4 text-gray-400 flex-shrink-0"></i>
+                    </div>
+                </a>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
 
 </main>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="bg-gray-900 text-gray-300 mt-16">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-8">
+            <div>
+                <h3 class="text-white font-bold text-lg mb-3">ShopName</h3>
+                <p class="text-sm text-gray-400">Quality products, delivered to your door.</p>
+            </div>
+            <div>
+                <h4 class="text-white font-semibold text-sm mb-3">Shop</h4>
+                <ul class="space-y-2 text-sm">
+                    <li><a href="shop.php" class="hover:text-white">All Products</a></li>
+                    <li><a href="shop.php?category=new" class="hover:text-white">New Arrivals</a></li>
+                </ul>
+            </div>
+            <div>
+                <h4 class="text-white font-semibold text-sm mb-3">Support</h4>
+                <ul class="space-y-2 text-sm">
+                    <li><a href="contact.php" class="hover:text-white">Contact Us</a></li>
+                    <li><a href="orders.php" class="hover:text-white">Track Order</a></li>
+                </ul>
+            </div>
+            <div>
+                <h4 class="text-white font-semibold text-sm mb-3">Legal</h4>
+                <ul class="space-y-2 text-sm">
+                    <li><a href="terms.php" class="hover:text-white">Terms of Service</a></li>
+                    <li><a href="privacy.php" class="hover:text-white">Privacy Policy</a></li>
+                </ul>
+            </div>
+            <div>
+                <h4 class="text-white font-semibold text-sm mb-3">Follow Us</h4>
+                <div class="flex gap-4">
+                    <a href="#" class="hover:text-white"><i data-lucide="instagram" class="w-5 h-5"></i></a>
+                    <a href="#" class="hover:text-white"><i data-lucide="facebook" class="w-5 h-5"></i></a>
+                    <a href="#" class="hover:text-white"><i data-lucide="twitter" class="w-5 h-5"></i></a>
+                </div>
+            </div>
+        </div>
+        <div class="border-t border-gray-800 mt-8 pt-6 text-center text-xs text-gray-500">
+            &copy; 2026 ShopName. All rights reserved.
+        </div>
+    </div>
+</footer>
 
 <script>
     lucide.createIcons();
@@ -125,108 +259,16 @@ require 'config/cart_count.php';
         document.getElementById('searchBar').classList.toggle('hidden');
     });
 
-    // ---- Sample order history ----
-    // NOTE: this will be replaced by a real PHP loop pulling rows from
-    // the `orders` table (WHERE user_id = current session user) in the
-    // backend phase.
-    const orders = [
-        {
-            number: 'ORD-482913', date: 'Aug 20, 2026', status: 'shipped', total: 149.98, itemCount: 2,
-            image: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=200&q=80'
-        },
-        {
-            number: 'ORD-471820', date: 'Aug 10, 2026', status: 'delivered', total: 74.99, itemCount: 1,
-            image: 'https://images.unsplash.com/photo-1523381210434-271e8be1f52b?w=200&q=80'
-        },
-        {
-            number: 'ORD-465301', date: 'Jul 28, 2026', status: 'delivered', total: 229.97, itemCount: 3,
-            image: 'https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=200&q=80'
-        },
-        {
-            number: 'ORD-459102', date: 'Jul 15, 2026', status: 'processing', total: 59.99, itemCount: 1,
-            image: 'https://images.unsplash.com/photo-1560343090-f0409e92791a?w=200&q=80'
-        },
-        {
-            number: 'ORD-450221', date: 'Jul 2, 2026', status: 'pending', total: 129.99, itemCount: 1,
-            image: 'https://images.unsplash.com/photo-1434389677669-e08b4cac3105?w=200&q=80'
+    // ---- Connect header search to the real search page ----
+    const searchInputField = document.querySelector('#searchBar input');
+    searchInputField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const term = searchInputField.value.trim();
+            if (term) {
+                window.location.href = `search.php?q=${encodeURIComponent(term)}`;
+            }
         }
-    ];
-
-    const statusStyles = {
-        pending:    'bg-gray-100 text-gray-600',
-        processing: 'bg-yellow-50 text-yellow-700',
-        shipped:    'bg-blue-50 text-blue-600',
-        delivered:  'bg-green-50 text-green-600'
-    };
-
-    const statusLabels = {
-        pending: 'Pending', processing: 'Processing', shipped: 'Shipped', delivered: 'Delivered'
-    };
-
-    const ordersList = document.getElementById('ordersList');
-    const noOrdersMsg = document.getElementById('noOrdersMsg');
-
-    function renderOrders(filter) {
-        ordersList.innerHTML = '';
-        const filtered = filter === 'all' ? orders : orders.filter(o => o.status === filter);
-
-        if (filtered.length === 0) {
-            noOrdersMsg.classList.remove('hidden');
-            return;
-        }
-        noOrdersMsg.classList.add('hidden');
-
-        filtered.forEach(order => {
-            const card = document.createElement('a');
-            card.href = `order-detail.php?order=${order.number}`;
-            card.className = 'block bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 hover:border-gray-300 transition';
-            card.innerHTML = `
-                <div class="flex items-center gap-4">
-                    <img src="${order.image}" alt="Order ${order.number}" class="w-16 h-16 rounded-xl object-cover flex-shrink-0">
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center justify-between gap-2 mb-1">
-                            <p class="text-sm font-semibold text-gray-900">#${order.number}</p>
-                            <span class="text-[11px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 ${statusStyles[order.status]}">
-                                ${statusLabels[order.status]}
-                            </span>
-                        </div>
-                        <p class="text-xs text-gray-500">${order.date} · ${order.itemCount} item${order.itemCount > 1 ? 's' : ''}</p>
-                        <p class="text-sm font-bold text-gray-900 mt-1">$${order.total.toFixed(2)}</p>
-                    </div>
-                    <i data-lucide="chevron-right" class="w-4 h-4 text-gray-400 flex-shrink-0"></i>
-                </div>
-            `;
-            ordersList.appendChild(card);
-        });
-
-        lucide.createIcons();
-    }
-
-    // ---- Filter tab clicks ----
-    document.querySelectorAll('.status-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            document.querySelectorAll('.status-tab').forEach(t => {
-                t.classList.remove('bg-black', 'text-white');
-                t.classList.add('bg-white', 'border', 'border-gray-300', 'text-gray-600');
-            });
-            tab.classList.add('bg-black', 'text-white');
-            tab.classList.remove('bg-white', 'border', 'border-gray-300', 'text-gray-600');
-            renderOrders(tab.dataset.status);
-        });
     });
-
-    renderOrders('all');
-
-     // ---- Connect header search to the real search page ----
-const searchInputField = document.querySelector('#searchBar input');
-searchInputField.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-        const term = searchInputField.value.trim();
-        if (term) {
-            window.location.href = `search.php?q=${encodeURIComponent(term)}`;
-        }
-    }
-});
 </script>
 
 </body>
