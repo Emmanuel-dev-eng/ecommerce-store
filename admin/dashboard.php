@@ -1,4 +1,95 @@
-<?php require '../config/admin_auth_check.php'; ?>
+<?php
+// ============================================
+// admin/dashboard.php
+// Real numbers from the database: revenue, orders, customers,
+// low stock, and the most recent orders.
+// ============================================
+
+require '../config/admin_auth_check.php'; // starts the session, admins only
+require '../config/db.php';
+require '../config/helpers.php';
+
+// A variant counts as "low stock" at or below this many units
+const LOW_STOCK_THRESHOLD = 5;
+
+// ---- 1) Order statistics: ONE query returns every number we need ----
+// No user input is involved, so query() is safe here.
+$orderStats = $pdo->query("
+    SELECT
+        COUNT(*) AS orders_total,
+        COALESCE(SUM(DATE(created_at) = CURDATE()), 0) AS orders_today,
+        COALESCE(SUM(status = 'pending'), 0) AS pending_count,
+        COALESCE(SUM(CASE WHEN payment_status = 'paid' AND status <> 'cancelled'
+                          THEN total_amount END), 0) AS revenue_total,
+        COALESCE(SUM(CASE WHEN payment_status = 'paid' AND status <> 'cancelled'
+                           AND created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')
+                          THEN total_amount END), 0) AS revenue_month,
+        COALESCE(SUM(CASE WHEN payment_status = 'unpaid' AND status <> 'cancelled'
+                          THEN total_amount END), 0) AS awaiting_payment
+    FROM orders
+")->fetch(PDO::FETCH_ASSOC);
+
+$ordersTotal     = (int)$orderStats['orders_total'];
+$ordersToday     = (int)$orderStats['orders_today'];
+$pendingCount    = (int)$orderStats['pending_count'];
+$revenueTotal    = (float)$orderStats['revenue_total'];
+$revenueMonth    = (float)$orderStats['revenue_month'];
+$awaitingPayment = (float)$orderStats['awaiting_payment'];
+
+// ---- 2) Customers ----
+$customerStats = $pdo->query("
+    SELECT
+        COUNT(*) AS customers_total,
+        COALESCE(SUM(created_at >= NOW() - INTERVAL 7 DAY), 0) AS new_this_week
+    FROM users
+    WHERE role = 'customer'
+")->fetch(PDO::FETCH_ASSOC);
+
+$customersTotal = (int)$customerStats['customers_total'];
+$newThisWeek    = (int)$customerStats['new_this_week'];
+
+// ---- 3) Low stock ----
+$lowCountStmt = $pdo->prepare("
+    SELECT COUNT(*)
+    FROM product_variants pv
+    JOIN products p ON pv.product_id = p.id
+    WHERE p.is_active = 1 AND pv.stock_quantity <= ?
+");
+$lowCountStmt->execute([LOW_STOCK_THRESHOLD]);
+$lowStockCount = (int)$lowCountStmt->fetchColumn();
+
+// The 6 lowest-stocked variants, emptiest first
+$lowStmt = $pdo->prepare("
+    SELECT pv.id AS variant_id, pv.sku, pv.stock_quantity, p.id AS product_id, p.name
+    FROM product_variants pv
+    JOIN products p ON pv.product_id = p.id
+    WHERE p.is_active = 1 AND pv.stock_quantity <= ?
+    ORDER BY pv.stock_quantity ASC, p.name ASC
+    LIMIT 6
+");
+$lowStmt->execute([LOW_STOCK_THRESHOLD]);
+$lowStock = $lowStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$lowLabels = variantLabels($pdo, array_column($lowStock, 'variant_id'));
+
+// ---- 4) Five most recent orders ----
+$recentOrders = $pdo->query("
+    SELECT order_number, customer_name, status, total_amount, created_at
+    FROM orders
+    ORDER BY created_at DESC
+    LIMIT 5
+")->fetchAll(PDO::FETCH_ASSOC);
+
+$statusStyles = [
+    'pending'    => 'bg-gray-100 text-gray-600',
+    'processing' => 'bg-yellow-50 text-yellow-700',
+    'shipped'    => 'bg-blue-50 text-blue-600',
+    'delivered'  => 'bg-green-50 text-green-600',
+    'cancelled'  => 'bg-red-50 text-red-600',
+];
+
+$firstName = explode(' ', trim($_SESSION['user_name'] ?? 'Admin'))[0];
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -12,42 +103,11 @@
 
 <div class="flex min-h-screen">
 
-    <!-- ===================== SIDEBAR (desktop) ===================== -->
-    <aside class="hidden lg:flex lg:flex-col w-64 bg-gray-900 text-gray-300 flex-shrink-0">
-        <div class="h-16 flex items-center px-6 border-b border-gray-800">
-            <span class="text-white font-bold text-lg">ShopName <span class="text-gray-500 font-normal text-sm">Admin</span></span>
-        </div>
-        <nav class="flex-1 px-3 py-4 space-y-1">
-            <a href="dashboard.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800 text-white text-sm font-medium">
-                <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard
-            </a>
-            <a href="products.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="package" class="w-4 h-4"></i> Products
-            </a>
-            <a href="categories.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="tag" class="w-4 h-4"></i> Categories
-            </a>
-            <a href="orders.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="shopping-cart" class="w-4 h-4"></i> Orders
-            </a>
-            <a href="customers.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="users" class="w-4 h-4"></i> Customers
-            </a>
-            <a href="settings.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="settings" class="w-4 h-4"></i> Settings
-            </a>
-        </nav>
-        <div class="p-3 border-t border-gray-800">
-            <a href="../logout.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium text-red-400">
-                <i data-lucide="log-out" class="w-4 h-4"></i> Log Out
-            </a>
-        </div>
-    </aside>
+    <?php $active = 'dashboard'; require __DIR__ . '/partials/sidebar.php'; ?>
 
     <!-- ===================== MAIN AREA ===================== -->
     <div class="flex-1 flex flex-col min-w-0">
 
-        <!-- Top bar (mobile has hamburger here) -->
         <header class="bg-white border-b border-gray-200 h-16 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-40">
             <div class="flex items-center gap-3">
                 <button id="adminMenuToggle" class="lg:hidden text-gray-700">
@@ -55,118 +115,149 @@
                 </button>
                 <h1 class="text-lg font-bold text-gray-900">Dashboard</h1>
             </div>
-            <div class="flex items-center gap-3">
-                <button class="relative text-gray-500 hover:text-gray-900">
-                    <i data-lucide="bell" class="w-5 h-5"></i>
-                    <span class="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-                </button>
-                <div class="w-8 h-8 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-bold">A</div>
+            <div class="w-8 h-8 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-bold">
+                <?= strtoupper(substr($firstName, 0, 1)) ?>
             </div>
         </header>
 
-        <!-- ===================== MOBILE SIDEBAR DRAWER ===================== -->
-        <div id="adminMobileDrawer" class="hidden fixed inset-0 z-50 lg:hidden">
-            <div id="adminDrawerOverlay" class="absolute inset-0 bg-black/50"></div>
-            <div class="absolute left-0 top-0 bottom-0 w-64 bg-gray-900 text-gray-300 flex flex-col">
-                <div class="h-16 flex items-center justify-between px-4 border-b border-gray-800">
-                    <span class="text-white font-bold">ShopName Admin</span>
-                    <button id="adminDrawerClose" class="text-gray-400">
-                        <i data-lucide="x" class="w-5 h-5"></i>
-                    </button>
-                </div>
-                <nav class="flex-1 px-3 py-4 space-y-1">
-                    <a href="dashboard.php" class="flex items-center gap-3 px-3 py-3 rounded-lg bg-gray-800 text-white text-sm font-medium">
-                        <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard
-                    </a>
-                    <a href="products.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="package" class="w-4 h-4"></i> Products
-                    </a>
-                    <a href="categories.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="tag" class="w-4 h-4"></i> Categories
-                    </a>
-                    <a href="orders.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="shopping-cart" class="w-4 h-4"></i> Orders
-                    </a>
-                    <a href="customers.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="users" class="w-4 h-4"></i> Customers
-                    </a>
-                    <a href="settings.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="settings" class="w-4 h-4"></i> Settings
-                    </a>
-                </nav>
-            </div>
-        </div>
-
-        <!-- ===================== PAGE CONTENT ===================== -->
         <main class="flex-1 p-4 sm:p-6">
 
-            <!-- Stat cards -->
+            <p class="text-sm text-gray-500 mb-5">Welcome back, <span class="font-medium text-gray-900"><?= htmlspecialchars($firstName) ?></span>.</p>
+
+            <?php if ($pendingCount > 0): ?>
+                <a href="orders.php?status=pending"
+                   class="flex items-center justify-between bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-xl px-4 py-3 mb-6 text-sm hover:bg-yellow-100">
+                    <span class="flex items-center gap-2">
+                        <i data-lucide="phone-call" class="w-4 h-4"></i>
+                        <span><strong><?= $pendingCount ?></strong> order<?= $pendingCount == 1 ? '' : 's' ?> waiting to be confirmed</span>
+                    </span>
+                    <span class="font-semibold">Review &rarr;</span>
+                </a>
+            <?php endif; ?>
+
+            <!-- ===================== STAT CARDS ===================== -->
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                <div class="bg-white rounded-2xl border border-gray-200 p-5">
+
+                <a href="orders.php" class="bg-white rounded-2xl border border-gray-200 p-5 hover:border-gray-300 transition">
                     <div class="flex items-center justify-between mb-2">
-                        <span class="text-xs text-gray-500">Total Revenue</span>
+                        <span class="text-xs text-gray-500">Revenue (collected)</span>
                         <i data-lucide="dollar-sign" class="w-4 h-4 text-green-500"></i>
                     </div>
-                    <p class="text-xl sm:text-2xl font-bold text-gray-900">$18,420</p>
-                    <p class="text-xs text-green-600 mt-1">↑ 12.4% this month</p>
-                </div>
-                <div class="bg-white rounded-2xl border border-gray-200 p-5">
+                    <p class="text-xl sm:text-2xl font-bold text-gray-900">$<?= number_format($revenueTotal, 2) ?></p>
+                    <p class="text-xs text-gray-500 mt-1">$<?= number_format($revenueMonth, 2) ?> this month</p>
+                    <p class="text-[11px] text-orange-500 mt-0.5">$<?= number_format($awaitingPayment, 2) ?> awaiting payment</p>
+                </a>
+
+                <a href="orders.php" class="bg-white rounded-2xl border border-gray-200 p-5 hover:border-gray-300 transition">
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-xs text-gray-500">Total Orders</span>
                         <i data-lucide="shopping-bag" class="w-4 h-4 text-blue-500"></i>
                     </div>
-                    <p class="text-xl sm:text-2xl font-bold text-gray-900">342</p>
-                    <p class="text-xs text-green-600 mt-1">↑ 8 today</p>
-                </div>
-                <div class="bg-white rounded-2xl border border-gray-200 p-5">
+                    <p class="text-xl sm:text-2xl font-bold text-gray-900"><?= $ordersTotal ?></p>
+                    <p class="text-xs text-gray-500 mt-1"><?= $ordersToday ?> today</p>
+                </a>
+
+                <a href="customers.php" class="bg-white rounded-2xl border border-gray-200 p-5 hover:border-gray-300 transition">
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-xs text-gray-500">Customers</span>
                         <i data-lucide="users" class="w-4 h-4 text-purple-500"></i>
                     </div>
-                    <p class="text-xl sm:text-2xl font-bold text-gray-900">1,204</p>
-                    <p class="text-xs text-gray-400 mt-1">32 new this week</p>
-                </div>
-                <div class="bg-white rounded-2xl border border-gray-200 p-5">
+                    <p class="text-xl sm:text-2xl font-bold text-gray-900"><?= $customersTotal ?></p>
+                    <p class="text-xs text-gray-500 mt-1"><?= $newThisWeek ?> new this week</p>
+                </a>
+
+                <a href="products.php" class="bg-white rounded-2xl border border-gray-200 p-5 hover:border-gray-300 transition">
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-xs text-gray-500">Low Stock</span>
-                        <i data-lucide="alert-triangle" class="w-4 h-4 text-red-500"></i>
+                        <i data-lucide="alert-triangle" class="w-4 h-4 <?= $lowStockCount > 0 ? 'text-red-500' : 'text-green-500' ?>"></i>
                     </div>
-                    <p class="text-xl sm:text-2xl font-bold text-gray-900">6</p>
-                    <p class="text-xs text-red-500 mt-1">Needs attention</p>
-                </div>
+                    <p class="text-xl sm:text-2xl font-bold text-gray-900"><?= $lowStockCount ?></p>
+                    <p class="text-xs mt-1 <?= $lowStockCount > 0 ? 'text-red-500' : 'text-green-600' ?>">
+                        <?= $lowStockCount > 0 ? 'Needs attention' : 'All stocked up' ?>
+                    </p>
+                </a>
             </div>
 
             <div class="grid lg:grid-cols-3 gap-6">
 
-                <!-- Recent Orders table -->
+                <!-- ===================== RECENT ORDERS ===================== -->
                 <div class="lg:col-span-2 bg-white rounded-2xl border border-gray-200 p-5 sm:p-6">
                     <div class="flex items-center justify-between mb-4">
                         <h2 class="text-sm font-bold text-gray-900">Recent Orders</h2>
                         <a href="orders.php" class="text-xs font-medium text-gray-500 hover:text-black">View all</a>
                     </div>
-                    <div class="overflow-x-auto -mx-2">
-                        <table class="w-full text-sm">
-                            <thead>
-                                <tr class="text-left text-gray-400 text-xs border-b border-gray-100">
-                                    <th class="pb-3 px-2 font-medium">Order</th>
-                                    <th class="pb-3 px-2 font-medium">Customer</th>
-                                    <th class="pb-3 px-2 font-medium">Status</th>
-                                    <th class="pb-3 px-2 font-medium text-right">Total</th>
-                                </tr>
-                            </thead>
-                            <tbody id="recentOrdersBody" class="divide-y divide-gray-50">
-                                <!-- Injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
+
+                    <?php if (empty($recentOrders)): ?>
+                        <p class="text-sm text-gray-400 text-center py-8">No orders yet. They'll appear here as customers check out.</p>
+                    <?php else: ?>
+                        <div class="overflow-x-auto -mx-2">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-gray-400 text-xs border-b border-gray-100">
+                                        <th class="pb-3 px-2 font-medium">Order</th>
+                                        <th class="pb-3 px-2 font-medium">Customer</th>
+                                        <th class="pb-3 px-2 font-medium">Status</th>
+                                        <th class="pb-3 px-2 font-medium text-right">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-50">
+                                    <?php foreach ($recentOrders as $o): ?>
+                                        <tr class="hover:bg-gray-50">
+                                            <td class="py-3 px-2 font-medium text-gray-900 whitespace-nowrap">
+                                                <a href="order-detail.php?order=<?= urlencode($o['order_number']) ?>" class="hover:underline">
+                                                    #<?= htmlspecialchars($o['order_number']) ?>
+                                                </a>
+                                                <p class="text-[11px] font-normal text-gray-400"><?= date('M j, g:i A', strtotime($o['created_at'])) ?></p>
+                                            </td>
+                                            <td class="py-3 px-2 text-gray-600"><?= htmlspecialchars($o['customer_name']) ?></td>
+                                            <td class="py-3 px-2">
+                                                <span class="text-[11px] font-semibold px-2 py-1 rounded-full <?= $statusStyles[$o['status']] ?? '' ?>">
+                                                    <?= ucfirst($o['status']) ?>
+                                                </span>
+                                            </td>
+                                            <td class="py-3 px-2 text-right font-semibold text-gray-900">$<?= number_format($o['total_amount'], 2) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
-                <!-- Low Stock Alerts -->
+                <!-- ===================== LOW STOCK ALERTS ===================== -->
                 <div class="bg-white rounded-2xl border border-gray-200 p-5 sm:p-6">
-                    <h2 class="text-sm font-bold text-gray-900 mb-4">Low Stock Alerts</h2>
-                    <div id="lowStockList" class="space-y-3">
-                        <!-- Injected by JS -->
-                    </div>
+                    <h2 class="text-sm font-bold text-gray-900 mb-1">Low Stock Alerts</h2>
+                    <p class="text-xs text-gray-400 mb-4"><?= LOW_STOCK_THRESHOLD ?> units or fewer</p>
+
+                    <?php if (empty($lowStock)): ?>
+                        <p class="text-sm text-gray-400 text-center py-6">Nothing is running low.</p>
+                    <?php else: ?>
+                        <div class="space-y-3">
+                            <?php foreach ($lowStock as $item): ?>
+                                <?php
+                                $label = isset($lowLabels[$item['variant_id']])
+                                    ? implode(', ', $lowLabels[$item['variant_id']])
+                                    : $item['sku'];
+                                $stock = (int)$item['stock_quantity'];
+                                ?>
+                                <a href="product-edit.php?id=<?= (int)$item['product_id'] ?>" class="flex items-center justify-between text-sm hover:bg-gray-50 rounded-lg -mx-2 px-2 py-1">
+                                    <div class="min-w-0">
+                                        <p class="font-medium text-gray-900 truncate"><?= htmlspecialchars($item['name']) ?></p>
+                                        <p class="text-xs text-gray-500"><?= htmlspecialchars($label) ?></p>
+                                    </div>
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ml-2 <?= $stock === 0 ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600' ?>">
+                                        <?= $stock === 0 ? 'Out of stock' : $stock . ' left' ?>
+                                    </span>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+
+                        <?php if ($lowStockCount > count($lowStock)): ?>
+                            <p class="text-xs text-gray-400 mt-4">
+                                + <?= $lowStockCount - count($lowStock) ?> more not shown
+                            </p>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
         </main>
@@ -175,66 +266,6 @@
 
 <script>
     lucide.createIcons();
-
-    // ---- Mobile drawer ----
-    const drawer = document.getElementById('adminMobileDrawer');
-    document.getElementById('adminMenuToggle').addEventListener('click', () => drawer.classList.remove('hidden'));
-    document.getElementById('adminDrawerClose').addEventListener('click', () => drawer.classList.add('hidden'));
-    document.getElementById('adminDrawerOverlay').addEventListener('click', () => drawer.classList.add('hidden'));
-
-    // ---- Sample recent orders ----
-    // NOTE: real data comes from `SELECT * FROM orders ORDER BY created_at
-    // DESC LIMIT 5` once PHP + MySQL are wired in.
-    const recentOrders = [
-        { id: 'ORD-482913', customer: 'Jane Doe', status: 'shipped', total: 149.98 },
-        { id: 'ORD-482910', customer: 'Michael Obi', status: 'processing', total: 89.99 },
-        { id: 'ORD-482905', customer: 'Sarah Lee', status: 'pending', total: 59.99 },
-        { id: 'ORD-482899', customer: 'Chinedu Okafor', status: 'delivered', total: 229.97 },
-        { id: 'ORD-482890', customer: 'Amaka Eze', status: 'delivered', total: 74.99 }
-    ];
-    const statusStyles = {
-        pending: 'bg-gray-100 text-gray-600', processing: 'bg-yellow-50 text-yellow-700',
-        shipped: 'bg-blue-50 text-blue-600', delivered: 'bg-green-50 text-green-600'
-    };
-    const tbody = document.getElementById('recentOrdersBody');
-    recentOrders.forEach(o => {
-        const row = document.createElement('tr');
-        row.className = 'hover:bg-gray-50 cursor-pointer';
-        row.innerHTML = `
-            <td class="py-3 px-2 font-medium text-gray-900">#${o.id}</td>
-            <td class="py-3 px-2 text-gray-600">${o.customer}</td>
-            <td class="py-3 px-2">
-                <span class="text-[11px] font-semibold px-2 py-1 rounded-full ${statusStyles[o.status]}">${o.status.charAt(0).toUpperCase() + o.status.slice(1)}</span>
-            </td>
-            <td class="py-3 px-2 text-right font-semibold text-gray-900">$${o.total.toFixed(2)}</td>
-        `;
-        tbody.appendChild(row);
-    });
-
-    // ---- Sample low stock products ----
-    // NOTE: real data comes from `SELECT * FROM product_variants WHERE
-    // stock_quantity < 5` once connected to MySQL.
-    const lowStock = [
-        { name: 'Classic White Sneakers', variant: 'Size L', stock: 2 },
-        { name: 'Wool Blend Overcoat', variant: 'Size M', stock: 1 },
-        { name: 'Running Sneakers', variant: 'Size S', stock: 3 },
-        { name: 'Silk Scarf', variant: 'Red', stock: 0 }
-    ];
-    const lowStockList = document.getElementById('lowStockList');
-    lowStock.forEach(item => {
-        const row = document.createElement('div');
-        row.className = 'flex items-center justify-between text-sm';
-        row.innerHTML = `
-            <div class="min-w-0">
-                <p class="font-medium text-gray-900 truncate">${item.name}</p>
-                <p class="text-xs text-gray-500">${item.variant}</p>
-            </div>
-            <span class="text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ${item.stock === 0 ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}">
-                ${item.stock === 0 ? 'Out of stock' : item.stock + ' left'}
-            </span>
-        `;
-        lowStockList.appendChild(row);
-    });
 </script>
 
 </body>
