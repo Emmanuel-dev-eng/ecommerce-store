@@ -1,4 +1,95 @@
-<?php require '../config/admin_auth_check.php'; ?>
+<?php
+// ============================================
+// admin/orders.php
+// Every customer order, with filtering, search and status updates.
+// ============================================
+
+require '../config/admin_auth_check.php'; // starts the session, admins only
+require '../config/db.php';
+require '../config/helpers.php';
+
+$validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+
+// ---- Read the filter and search from the URL ----
+$filter = $_GET['status'] ?? 'all';
+if ($filter !== 'all' && !in_array($filter, $validStatuses, true)) {
+    $filter = 'all'; // only known statuses are accepted
+}
+// is_string() guards against tricks like ?q[]=x
+$q = is_string($_GET['q'] ?? null) ? trim($_GET['q']) : '';
+
+// Where to return after an action, keeping the current filter and search
+$backParams = [];
+if ($filter !== 'all') { $backParams['status'] = $filter; }
+if ($q !== '')         { $backParams['q'] = $q; }
+$backUrl = 'orders.php' . ($backParams ? '?' . http_build_query($backParams) : '');
+
+// ---- Handle a status update ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'update_status') {
+    $orderId   = (int)($_POST['order_id'] ?? 0);
+    $newStatus = is_string($_POST['status'] ?? null) ? $_POST['status'] : '';
+
+    $error = updateOrderStatus($pdo, $orderId, $newStatus);
+
+    // A "flash" message: stored in the session, shown once after the redirect
+    $_SESSION['flash'] = ($error === '')
+        ? ['type' => 'success', 'text' => 'Order status updated.']
+        : ['type' => 'error',   'text' => $error];
+
+    header("Location: " . $backUrl);
+    exit;
+}
+
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']); // so it only shows once
+
+// ---- Counts for the tabs, e.g. ['pending' => 3, 'shipped' => 1] ----
+// FETCH_KEY_PAIR turns a two-column result into [first column => second column].
+$counts = $pdo->query("SELECT status, COUNT(*) FROM orders GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$totalCount = array_sum($counts);
+
+// ---- Fetch the orders ----
+// "WHERE 1=1" is always true; it lets every optional filter below start with AND.
+$sql = "
+    SELECT id, order_number, customer_name, phone, total_amount,
+           status, payment_method, payment_status, created_at
+    FROM orders
+    WHERE 1=1
+";
+$params = [];
+
+if ($filter !== 'all') {
+    $sql .= " AND status = ?";
+    $params[] = $filter;
+}
+if ($q !== '') {
+    $sql .= " AND (order_number LIKE ? OR customer_name LIKE ? OR phone LIKE ?)";
+    $like = '%' . $q . '%';
+    array_push($params, $like, $like, $like);
+}
+$sql .= " ORDER BY created_at DESC";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$statusStyles = [
+    'pending'    => 'bg-gray-100 text-gray-600',
+    'processing' => 'bg-yellow-50 text-yellow-700',
+    'shipped'    => 'bg-blue-50 text-blue-600',
+    'delivered'  => 'bg-green-50 text-green-600',
+    'cancelled'  => 'bg-red-50 text-red-600',
+];
+
+$tabs = [
+    'all'        => 'All',
+    'pending'    => 'Pending',
+    'processing' => 'Processing',
+    'shipped'    => 'Shipped',
+    'delivered'  => 'Delivered',
+    'cancelled'  => 'Cancelled',
+];
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -12,37 +103,7 @@
 
 <div class="flex min-h-screen">
 
-    <!-- ===================== SIDEBAR (desktop) ===================== -->
-    <aside class="hidden lg:flex lg:flex-col w-64 bg-gray-900 text-gray-300 flex-shrink-0">
-        <div class="h-16 flex items-center px-6 border-b border-gray-800">
-            <span class="text-white font-bold text-lg">ShopName <span class="text-gray-500 font-normal text-sm">Admin</span></span>
-        </div>
-        <nav class="flex-1 px-3 py-4 space-y-1">
-            <a href="dashboard.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard
-            </a>
-            <a href="products.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="package" class="w-4 h-4"></i> Products
-            </a>
-            <a href="categories.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="tag" class="w-4 h-4"></i> Categories
-            </a>
-            <a href="orders.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800 text-white text-sm font-medium">
-                <i data-lucide="shopping-cart" class="w-4 h-4"></i> Orders
-            </a>
-            <a href="customers.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="users" class="w-4 h-4"></i> Customers
-            </a>
-            <a href="settings.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                <i data-lucide="settings" class="w-4 h-4"></i> Settings
-            </a>
-        </nav>
-        <div class="p-3 border-t border-gray-800">
-           <a href="../logout.php" class="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-800 text-sm font-medium text-red-400">
-                <i data-lucide="log-out" class="w-4 h-4"></i> Log Out
-            </a>
-        </div>
-    </aside>
+    <?php $active = 'orders'; require __DIR__ . '/partials/sidebar.php'; ?>
 
     <!-- ===================== MAIN AREA ===================== -->
     <div class="flex-1 flex flex-col min-w-0">
@@ -54,59 +115,54 @@
                 </button>
                 <h1 class="text-lg font-bold text-gray-900">Orders</h1>
             </div>
-            <div class="w-8 h-8 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-bold">A</div>
+            <div class="w-8 h-8 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-bold">
+                <?= strtoupper(substr($_SESSION['user_name'] ?? 'A', 0, 1)) ?>
+            </div>
         </header>
 
-        <!-- ===================== MOBILE SIDEBAR DRAWER ===================== -->
-        <div id="adminMobileDrawer" class="hidden fixed inset-0 z-50 lg:hidden">
-            <div id="adminDrawerOverlay" class="absolute inset-0 bg-black/50"></div>
-            <div class="absolute left-0 top-0 bottom-0 w-64 bg-gray-900 text-gray-300 flex flex-col">
-                <div class="h-16 flex items-center justify-between px-4 border-b border-gray-800">
-                    <span class="text-white font-bold">ShopName Admin</span>
-                    <button id="adminDrawerClose" class="text-gray-400">
-                        <i data-lucide="x" class="w-5 h-5"></i>
-                    </button>
-                </div>
-                <nav class="flex-1 px-3 py-4 space-y-1">
-                    <a href="dashboard.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard
-                    </a>
-                    <a href="products.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="package" class="w-4 h-4"></i> Products
-                    </a>
-                    <a href="categories.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="tag" class="w-4 h-4"></i> Categories
-                    </a>
-                    <a href="orders.php" class="flex items-center gap-3 px-3 py-3 rounded-lg bg-gray-800 text-white text-sm font-medium">
-                        <i data-lucide="shopping-cart" class="w-4 h-4"></i> Orders
-                    </a>
-                    <a href="customers.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="users" class="w-4 h-4"></i> Customers
-                    </a>
-                    <a href="settings.php" class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-gray-800 text-sm font-medium">
-                        <i data-lucide="settings" class="w-4 h-4"></i> Settings
-                    </a>
-                </nav>
-            </div>
-        </div>
-
-        <!-- ===================== PAGE CONTENT ===================== -->
         <main class="flex-1 p-4 sm:p-6">
 
-            <!-- Toolbar -->
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
-                <div class="relative w-full sm:max-w-xs">
-                    <input type="text" id="orderSearch" placeholder="Search order # or customer..."
+            <?php if ($flash): ?>
+                <div class="mb-5 text-sm rounded-lg px-4 py-3 border <?= $flash['type'] === 'success'
+                        ? 'bg-green-50 border-green-200 text-green-700'
+                        : 'bg-red-50 border-red-200 text-red-600' ?>">
+                    <?= htmlspecialchars($flash['text']) ?>
+                </div>
+            <?php endif; ?>
+
+            <!-- Search -->
+            <form method="GET" class="mb-4 flex gap-2 max-w-md">
+                <?php if ($filter !== 'all'): ?>
+                    <input type="hidden" name="status" value="<?= htmlspecialchars($filter) ?>">
+                <?php endif; ?>
+                <div class="relative flex-1">
+                    <input type="text" name="q" value="<?= htmlspecialchars($q) ?>" placeholder="Order #, name or phone..."
                         class="w-full border border-gray-300 rounded-lg py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-black">
                     <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
                 </div>
-                <div class="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
-                    <button class="status-filter whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold bg-black text-white" data-status="all">All</button>
-                    <button class="status-filter whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="pending">Pending</button>
-                    <button class="status-filter whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="processing">Processing</button>
-                    <button class="status-filter whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="shipped">Shipped</button>
-                    <button class="status-filter whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-black" data-status="delivered">Delivered</button>
-                </div>
+                <button type="submit" class="bg-black text-white text-sm font-semibold px-4 rounded-lg hover:bg-gray-800">Search</button>
+                <?php if ($q !== ''): ?>
+                    <a href="<?= $filter !== 'all' ? 'orders.php?status=' . urlencode($filter) : 'orders.php' ?>"
+                       class="flex items-center px-3 text-sm text-gray-500 hover:text-black">Clear</a>
+                <?php endif; ?>
+            </form>
+
+            <!-- Status tabs -->
+            <div class="flex items-center gap-2 mb-5 overflow-x-auto pb-1">
+                <?php foreach ($tabs as $key => $label): ?>
+                    <?php
+                    $tabParams = [];
+                    if ($key !== 'all') { $tabParams['status'] = $key; }
+                    if ($q !== '')      { $tabParams['q'] = $q; }
+                    $count = ($key === 'all') ? $totalCount : ($counts[$key] ?? 0);
+                    ?>
+                    <a href="orders.php<?= $tabParams ? '?' . http_build_query($tabParams) : '' ?>"
+                       class="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold <?= $filter === $key
+                            ? 'bg-black text-white'
+                            : 'bg-white border border-gray-300 text-gray-600 hover:border-black' ?>">
+                        <?= $label ?> (<?= $count ?>)
+                    </a>
+                <?php endforeach; ?>
             </div>
 
             <!-- Orders table -->
@@ -119,148 +175,80 @@
                                 <th class="py-3 px-4 font-medium">Customer</th>
                                 <th class="py-3 px-4 font-medium">Date</th>
                                 <th class="py-3 px-4 font-medium">Total</th>
+                                <th class="py-3 px-4 font-medium">Payment</th>
                                 <th class="py-3 px-4 font-medium">Status</th>
                                 <th class="py-3 px-4 font-medium text-right">Update</th>
                             </tr>
                         </thead>
-                        <tbody id="ordersTableBody" class="divide-y divide-gray-50">
-                            <!-- Injected by JS -->
+                        <tbody class="divide-y divide-gray-50">
+                            <?php foreach ($orders as $o): ?>
+                                <?php $next = allowedNextStatuses($o['status']); ?>
+                                <tr class="hover:bg-gray-50">
+                                    <td class="py-3 px-4 font-medium text-gray-900 whitespace-nowrap">
+                                        <a href="order-detail.php?order=<?= urlencode($o['order_number']) ?>" class="hover:underline">
+                                            #<?= htmlspecialchars($o['order_number']) ?>
+                                        </a>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <p class="text-gray-900"><?= htmlspecialchars($o['customer_name']) ?></p>
+                                        <p class="text-xs text-gray-400"><?= htmlspecialchars($o['phone']) ?></p>
+                                    </td>
+                                    <td class="py-3 px-4 text-gray-500 whitespace-nowrap"><?= date('M j, Y', strtotime($o['created_at'])) ?></td>
+                                    <td class="py-3 px-4 font-semibold text-gray-900">$<?= number_format($o['total_amount'], 2) ?></td>
+                                    <td class="py-3 px-4 whitespace-nowrap">
+                                        <p class="text-xs text-gray-600"><?= $o['payment_method'] === 'cod' ? 'Cash on Delivery' : 'Paystack' ?></p>
+                                        <p class="text-[11px] <?= $o['payment_status'] === 'paid' ? 'text-green-600' : 'text-orange-500' ?>">
+                                            <?= ucfirst($o['payment_status']) ?>
+                                        </p>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="text-[11px] font-semibold px-2 py-1 rounded-full <?= $statusStyles[$o['status']] ?? '' ?>">
+                                            <?= ucfirst($o['status']) ?>
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <?php if (empty($next)): ?>
+                                            <p class="text-xs text-gray-400 text-right">—</p>
+                                        <?php else: ?>
+                                            <form method="POST" class="flex items-center justify-end gap-2" onsubmit="return confirmStatus(this);">
+                                                <input type="hidden" name="action" value="update_status">
+                                                <input type="hidden" name="order_id" value="<?= (int)$o['id'] ?>">
+                                                <select name="status" required
+                                                    class="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-black">
+                                                    <option value="" selected disabled>Change to…</option>
+                                                    <?php foreach ($next as $s): ?>
+                                                        <option value="<?= $s ?>"><?= ucfirst($s) ?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                                <button type="submit" class="bg-gray-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-black">Save</button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-                <p id="noOrdersMsg" class="hidden text-center text-sm text-gray-400 py-10">No orders match your filters.</p>
+
+                <?php if (empty($orders)): ?>
+                    <p class="text-center text-sm text-gray-400 py-10">No orders match your filters.</p>
+                <?php endif; ?>
             </div>
 
         </main>
     </div>
 </div>
 
-<!-- ===================== TOAST ===================== -->
-<div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-3 rounded-lg shadow-lg z-50 items-center gap-2">
-    <i data-lucide="check-circle" class="w-4 h-4 text-green-400"></i>
-    <span id="toastText">Status updated.</span>
-</div>
-
 <script>
     lucide.createIcons();
 
-    const drawer = document.getElementById('adminMobileDrawer');
-    document.getElementById('adminMenuToggle').addEventListener('click', () => drawer.classList.remove('hidden'));
-    document.getElementById('adminDrawerClose').addEventListener('click', () => drawer.classList.add('hidden'));
-    document.getElementById('adminDrawerOverlay').addEventListener('click', () => drawer.classList.add('hidden'));
-
-    // ---- Sample order data ----
-    // NOTE: this becomes `SELECT * FROM orders JOIN users ON orders.user_id
-    // = users.id ORDER BY created_at DESC` once PHP + MySQL are connected.
-    let orders = [
-        { id: 'ORD-482913', customer: 'Jane Doe', date: 'Aug 20, 2026', total: 149.98, status: 'shipped' },
-        { id: 'ORD-482910', customer: 'Michael Obi', date: 'Aug 19, 2026', total: 89.99, status: 'processing' },
-        { id: 'ORD-482905', customer: 'Sarah Lee', date: 'Aug 18, 2026', total: 59.99, status: 'pending' },
-        { id: 'ORD-482899', customer: 'Chinedu Okafor', date: 'Aug 15, 2026', total: 229.97, status: 'delivered' },
-        { id: 'ORD-482890', customer: 'Amaka Eze', date: 'Aug 12, 2026', total: 74.99, status: 'delivered' },
-        { id: 'ORD-482875', customer: 'Tunde Bakare', date: 'Aug 10, 2026', total: 129.99, status: 'pending' }
-    ];
-
-    const statusStyles = {
-        pending: 'bg-gray-100 text-gray-600', processing: 'bg-yellow-50 text-yellow-700',
-        shipped: 'bg-blue-50 text-blue-600', delivered: 'bg-green-50 text-green-600'
-    };
-
-    const tbody = document.getElementById('ordersTableBody');
-    const noOrdersMsg = document.getElementById('noOrdersMsg');
-    let currentFilter = 'all';
-    let currentSearch = '';
-
-    function renderOrders() {
-        tbody.innerHTML = '';
-        let filtered = orders;
-
-        if (currentFilter !== 'all') {
-            filtered = filtered.filter(o => o.status === currentFilter);
+    // Ask before cancelling. Returning false stops the form from submitting.
+    function confirmStatus(form) {
+        if (form.status.value === 'cancelled') {
+            return confirm('Cancel this order? The stock will be returned to inventory.');
         }
-        if (currentSearch) {
-            const term = currentSearch.toLowerCase();
-            filtered = filtered.filter(o => o.id.toLowerCase().includes(term) || o.customer.toLowerCase().includes(term));
-        }
-
-        if (filtered.length === 0) {
-            noOrdersMsg.classList.remove('hidden');
-        } else {
-            noOrdersMsg.classList.add('hidden');
-        }
-
-        filtered.forEach(o => {
-            const row = document.createElement('tr');
-            row.className = 'hover:bg-gray-50';
-            row.innerHTML = `
-<td class="py-3 px-4 font-medium text-gray-900"><a href="order-detail.php?order=${o.id}" class="hover:underline">#${o.id}</a></td>                <td class="py-3 px-4 text-gray-600">${o.customer}</td>
-                <td class="py-3 px-4 text-gray-500">${o.date}</td>
-                <td class="py-3 px-4 font-semibold text-gray-900">$${o.total.toFixed(2)}</td>
-                <td class="py-3 px-4">
-                    <span class="text-[11px] font-semibold px-2 py-1 rounded-full ${statusStyles[o.status]}">
-                        ${o.status.charAt(0).toUpperCase() + o.status.slice(1)}
-                    </span>
-                </td>
-                <td class="py-3 px-4 text-right">
-                    <select class="status-select border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-black" data-id="${o.id}">
-                        <option value="pending" ${o.status==='pending'?'selected':''}>Pending</option>
-                        <option value="processing" ${o.status==='processing'?'selected':''}>Processing</option>
-                        <option value="shipped" ${o.status==='shipped'?'selected':''}>Shipped</option>
-                        <option value="delivered" ${o.status==='delivered'?'selected':''}>Delivered</option>
-                        <option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option>
-                    </select>
-                </td>
-            `;
-            tbody.appendChild(row);
-        });
-
-        // ---- Status change handler ----
-        document.querySelectorAll('.status-select').forEach(select => {
-            select.addEventListener('change', () => {
-                // NOTE: real update runs `UPDATE orders SET status = ?
-                // WHERE id = ?` via PHP in the backend phase — likely also
-                // triggering an email notification to the customer.
-                const order = orders.find(o => o.id === select.dataset.id);
-                order.status = select.value;
-                renderOrders();
-                showToast(`Order #${order.id} marked as ${order.status}.`);
-            });
-        });
+        return true;
     }
-
-    // ---- Filter tabs ----
-    document.querySelectorAll('.status-filter').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.status-filter').forEach(b => {
-                b.classList.remove('bg-black', 'text-white');
-                b.classList.add('bg-white', 'border', 'border-gray-300', 'text-gray-600');
-            });
-            btn.classList.add('bg-black', 'text-white');
-            btn.classList.remove('bg-white', 'border', 'border-gray-300', 'text-gray-600');
-            currentFilter = btn.dataset.status;
-            renderOrders();
-        });
-    });
-
-    // ---- Search ----
-    document.getElementById('orderSearch').addEventListener('input', (e) => {
-        currentSearch = e.target.value.trim();
-        renderOrders();
-    });
-
-    // ---- Toast ----
-    function showToast(text) {
-        const toast = document.getElementById('toast');
-        document.getElementById('toastText').textContent = text;
-        toast.classList.remove('hidden');
-        toast.classList.add('flex');
-        setTimeout(() => {
-            toast.classList.add('hidden');
-            toast.classList.remove('flex');
-        }, 3000);
-    }
-
-    renderOrders();
 </script>
 
 </body>

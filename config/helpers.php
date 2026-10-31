@@ -41,4 +41,73 @@ function variantLabels(PDO $pdo, array $variantIds): array
     }
     return $labels;
 }
+
+
+// What can an order's status change to? Forward only, plus cancel before delivery.
+function allowedNextStatuses(string $current): array
+{
+    $map = [
+        'pending'    => ['processing', 'cancelled'],
+        'processing' => ['shipped', 'cancelled'],
+        'shipped'    => ['delivered'],
+        'delivered'  => [],
+        'cancelled'  => [],
+    ];
+    return $map[$current] ?? [];
+}
+
+// Changes an order's status safely, inside a transaction.
+// Returns '' on success, or an error message to show the admin.
+function updateOrderStatus(PDO $pdo, int $orderId, string $newStatus): string
+{
+    try {
+        $pdo->beginTransaction();
+
+        // Lock the order row while we work on it
+        $stmt = $pdo->prepare("SELECT status, payment_method FROM orders WHERE id = ? FOR UPDATE");
+        $stmt->execute([$orderId]);
+        $order = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$order) {
+            $pdo->rollBack();
+            return "Order not found.";
+        }
+
+        // Enforce the rules ON THE SERVER, whatever the browser sent
+        if (!in_array($newStatus, allowedNextStatuses($order['status']), true)) {
+            $pdo->rollBack();
+            return "That status change isn't allowed.";
+        }
+
+        // Cancelling puts the stock back on the shelf
+        if ($newStatus === 'cancelled') {
+            $restore = $pdo->prepare("
+                UPDATE product_variants pv
+                JOIN order_items oi ON oi.variant_id = pv.id
+                SET pv.stock_quantity = pv.stock_quantity + oi.quantity
+                WHERE oi.order_id = ?
+            ");
+            $restore->execute([$orderId]);
+        }
+
+        // Cash on Delivery: delivered means the cash has been collected
+        if ($newStatus === 'delivered' && $order['payment_method'] === 'cod') {
+            $update = $pdo->prepare("UPDATE orders SET status = ?, payment_status = 'paid' WHERE id = ?");
+        } else {
+            $update = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
+        }
+        $update->execute([$newStatus, $orderId]);
+
+        $pdo->commit();
+        return '';
+
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log($e->getMessage());
+        return "Something went wrong. Please try again.";
+    }
+}
+
 ?>
